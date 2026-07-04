@@ -1,0 +1,224 @@
+namespace Analyser is
+    use System.Text.StringBuilder;
+    use System.Text.Json.JsonElement;
+
+    use Analysis.Protocol.DIAGNOSTIC;
+    use Analysis.Protocol.LOCATION_DTO;
+
+    use MCP.SERVER;
+    use MCP.TOOL;
+    use MCP.WIRE;
+
+    // Registers the semantic-query tools onto the MCP server, each backed by
+    // the shared analyser session. All lines and columns are 1-based, both
+    // ways, matching compiler diagnostics.
+    class ANALYSER_TOOLS is
+        POSITION_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "\"file\": {{\"type\": \"string\", \"description\": \"source path relative to the project directory\"}},"
+            "\"line\": {{\"type\": \"integer\", \"description\": \"1-based line\"}},"
+            "\"column\": {{\"type\": \"integer\", \"description\": \"1-based column\"}}"
+            "}}, \"required\": [\"file\", \"line\", \"column\"]}}";
+
+        register(server: SERVER, session: ANALYSER_SESSION) static is
+            server.add_tool(
+                TOOL(
+                    "diagnostics",
+                    "compile the ghūl project and report all errors and warnings",
+                    "{{\"type\": \"object\", \"properties\": {{}}}}",
+                    arguments => run_diagnostics(session)
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "hover",
+                    "signature and kind of the symbol at a position, as the IDE hover would show it",
+                    POSITION_SCHEMA,
+                    arguments => run_hover(session, arguments)
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "definition",
+                    "location where the symbol at a position is defined",
+                    POSITION_SCHEMA,
+                    arguments => run_position_locations(session, arguments, "definition")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "references",
+                    "all locations that reference the symbol at a position",
+                    POSITION_SCHEMA,
+                    arguments => run_position_locations(session, arguments, "references")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "implementations",
+                    "locations implementing the trait member or overriding the method at a position",
+                    POSITION_SCHEMA,
+                    arguments => run_position_locations(session, arguments, "implementations")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "symbols",
+                    "search symbol declarations across the project by substring; empty query lists every symbol",
+                    "{{\"type\": \"object\", \"properties\": {{"
+                    "\"query\": {{\"type\": \"string\", \"description\": \"case-insensitive substring to filter symbol descriptions; empty or omitted returns all\"}}"
+                    "}}}}",
+                    arguments => run_symbols(session, arguments)
+                )
+            );
+        si
+
+        run_diagnostics(session: ANALYSER_SESSION) -> string static is
+            let response = session.compile_diagnostics();
+            let result = StringBuilder();
+            let count mut = 0;
+
+            for diagnostic in response.diagnostics do
+                if !diagnostic.is_internal then
+                    result.append("{render_diagnostic(diagnostic)}\n");
+                    count = count + 1;
+                fi
+            od
+
+            if count == 0 then
+                return "no errors or warnings";
+            fi
+
+            return result.to_string();
+        si
+
+        render_diagnostic(diagnostic: DIAGNOSTIC) -> string static =>
+            "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}";
+
+        severity_name(severity: int) -> string static =>
+            if severity == 1 then
+                "error"
+            elif severity == 2 then
+                "warning"
+            elif severity == 3 then
+                "info"
+            else
+                "hint"
+            fi;
+
+        run_hover(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
+            let position = read_position(arguments);
+            let response = session.hover(position.file, position.line, position.column);
+
+            if response.signature.length == 0 then
+                return "nothing at {position.file}:{position.line}:{position.column}";
+            fi
+
+            if let kind_label: string = response.kind_label then
+                return "{response.signature}\n({kind_label})";
+            fi
+
+            return response.signature;
+        si
+
+        run_position_locations(session: ANALYSER_SESSION, arguments: JsonElement, which: string) -> string static is
+            let position = read_position(arguments);
+
+            let locations =
+                if which =~ "definition" then
+                    session.definition(position.file, position.line, position.column).locations
+                elif which =~ "references" then
+                    session.references(position.file, position.line, position.column).locations
+                else
+                    session.implementation(position.file, position.line, position.column).locations
+                fi;
+
+            if locations.count == 0 then
+                return "no {which} found for {position.file}:{position.line}:{position.column}";
+            fi
+
+            let result = StringBuilder();
+
+            for location in locations do
+                result.append("{render_location(location)}\n");
+            od
+
+            return result.to_string();
+        si
+
+        render_location(location: LOCATION_DTO) -> string static =>
+            "{location.file}:{location.start_line}:{location.start_column}-{location.end_line}:{location.end_column}";
+
+        MAX_SYMBOL_MATCHES: int static => 200;
+
+        run_symbols(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
+            let query = (WIRE.try_get_string(arguments, "query") ?? "").to_lower_invariant();
+            let response = session.symbols("");
+
+            let result = StringBuilder();
+            let count mut = 0;
+
+            for file in response.files do
+                for symbol in file.symbols do
+                    if query.length == 0 \/ symbol.search_description.to_lower_invariant().contains(query) then
+                        if count < MAX_SYMBOL_MATCHES then
+                            result.append("{symbol.search_description} - {file.path}:{symbol.start_line}:{symbol.start_column}");
+
+                            if symbol.qualifier.length > 0 then
+                                result.append(" (in {symbol.qualifier})");
+                            fi
+
+                            result.append("\n");
+                        fi
+
+                        count = count + 1;
+                    fi
+                od
+            od
+
+            if count == 0 then
+                return "no symbols match {query}";
+            fi
+
+            if count > MAX_SYMBOL_MATCHES then
+                result.append("... and {count - MAX_SYMBOL_MATCHES} more matches not shown - narrow the query\n");
+            fi
+
+            return result.to_string();
+        si
+
+        read_position(arguments: JsonElement) -> POSITION static is
+            let file = WIRE.try_get_string(arguments, "file");
+
+            if !file? then
+                throw System.Exception("file argument is required");
+            fi
+
+            let line = WIRE.try_get_int(arguments, "line");
+            let column = WIRE.try_get_int(arguments, "column");
+
+            if line < 1 \/ column < 1 then
+                throw System.Exception("line and column arguments are required and 1-based");
+            fi
+
+            return POSITION(file, line, column);
+        si
+    si
+
+    class POSITION is
+        file: string public;
+        line: int public;
+        column: int public;
+
+        init(file: string, line: int, column: int) is
+            self.file = file;
+            self.line = line;
+            self.column = column;
+        si
+    si
+si

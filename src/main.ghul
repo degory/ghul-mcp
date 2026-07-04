@@ -1,10 +1,23 @@
 use IO.Std;
 
-VERSION: string => "0.1.0";
+server_version: string => "0.2.0";
 
-entry() is
+entry(arguments: string[]) is
     Std.input_encoding = System.Text.UTF8Encoding(false);
     Std.output_encoding = System.Text.UTF8Encoding(false);
+
+    let project_directory mut = ".";
+    let index mut = 0;
+
+    while index < arguments.count do
+        if arguments[index] =~ "--project" /\ index + 1 < arguments.count then
+            project_directory = arguments[index + 1];
+            index = index + 2;
+        else
+            Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arguments[index]}");
+            index = index + 1;
+        fi
+    od
 
     let reader =
         IO.StreamReader(
@@ -14,16 +27,23 @@ entry() is
             65536
         );
 
-    let server = MCP.SERVER(reader, Std.out, "ghul-mcp", VERSION);
+    let server = MCP.SERVER(reader, Std.out, "ghul-mcp", server_version);
+    let session = Analyser.ANALYSER_SESSION(project_directory);
 
     server.add_tool(
         MCP.TOOL(
             "version",
             "report the ghul-mcp server version",
             "{{\"type\": \"object\", \"properties\": {{}}}}",
-            arguments => "ghul-mcp {VERSION}"
+            arguments => "ghul-mcp {server_version}"
         )
     );
 
-    server.run();
+    Analyser.ANALYSER_TOOLS.register(server, session);
+
+    try
+        server.run();
+    finally
+        session.dispose();
+    yrt
 si
