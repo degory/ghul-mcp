@@ -9,6 +9,6 @@
     <GhulSources Include="src/**/*.ghul" />
 
     <PackageReference Include="ghul.runtime" Version="5.3.0" />
-    <PackageReference Include="ghul.analysis.protocol" Version="19.9.2" />
+    <PackageReference Include="ghul.analysis.protocol" Version="19.10.0" />
   </ItemGroup>
 </Project>

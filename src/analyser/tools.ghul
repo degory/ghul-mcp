@@ -321,12 +321,19 @@ namespace Analyser is
             return matches;
         si
 
-        // The analyser's SYMBOL_DTO points at the *start* of the declaration,
-        // which for a class/trait/struct/union is the keyword rather than the
-        // identifier - and hover/references at the keyword return nothing. Read
-        // the declaration line off disk and find the identifier's column. Fall
-        // back to the reported start column if the file can't be read.
+        // SYMBOL_DTO.start_line/start_column point at the declaration's
+        // start, which for a class/trait/struct/union/variant/enum is the
+        // keyword - and hover/references at the keyword return nothing.
+        // Analyser 19.10.0+ populates name_line/name_column for the
+        // identifier itself; use those when present. For older analysers
+        // the fields are zero, and we fall back to scanning the source
+        // line for the identifier by name (works but requires filesystem
+        // access from the server).
         locate_identifier(session: ANALYSER_SESSION, match: SYMBOL_MATCH, name: string) -> POSITION static is
+            if match.symbol.name_line > 0 /\ match.symbol.name_column > 0 then
+                return POSITION(match.file, match.symbol.name_line, match.symbol.name_column);
+            fi
+
             let default_position = POSITION(match.file, match.symbol.start_line, match.symbol.start_column);
             let full_path = Path.combine(session.project_directory, match.file);
 
