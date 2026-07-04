@@ -12,13 +12,18 @@ references, symbol search — by driving `ghul-compiler --analyse` through the
 
 ## Layout
 
-- `src/main.ghul` — entry point: wires streams, registers tools, runs the
-  server loop.
+- `src/main.ghul` — entry point: parses `--project`, wires streams,
+  registers tools, runs the server loop.
 - `src/mcp/` — MCP protocol core: `wire.ghul` (JSON-RPC envelope, framing,
   serializer options), `server.ghul` (method dispatch and result DTOs),
   `tools.ghul` (the tool abstraction).
-- `tests/smoke.sh` — end-to-end test driving the built server over stdio;
-  this is what CI runs.
+- `src/analyser/` — the semantic layer: `session.ghul` (spawns the target
+  project's pinned compiler in analysis mode, seeds and freshens sources,
+  speaks the `ghul.analysis.protocol` wire), `tools.ghul` (maps MCP tool
+  calls onto analyser queries and renders responses as text).
+- `tests/smoke.sh` — end-to-end test driving the built server over stdio,
+  including analyser tools against a scratch project copy with a
+  mid-session file edit; this is what CI runs.
 
 ## Build and test
 

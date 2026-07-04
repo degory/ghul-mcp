@@ -1,0 +1,406 @@
+namespace Analyser is
+    use System.Exception;
+    use System.Diagnostics.Process;
+    use System.Diagnostics.ProcessStartInfo;
+    use System.Text.StringBuilder;
+    use System.Text.UTF8Encoding;
+    use System.Text.Json.JsonSerializer;
+    use System.Text.Json.JsonSerializerOptions;
+
+    use Collections.LIST;
+    use Collections.MAP;
+
+    use IO.Directory;
+    use IO.File;
+    use IO.Path;
+
+    use Analysis.Protocol.EDIT_FILE;
+    use Analysis.Protocol.Request;
+    use Analysis.Protocol.Response;
+
+    class ASSEMBLIES_FILE is
+        assemblies: LIST[string] public;
+
+        init() is si
+    si
+
+    // A long-lived `dotnet ghul-compiler --analyse` session over one ghūl
+    // project. Spawns the project's own pinned compiler tool in the project
+    // directory, seeds it with the project's assembly references (from
+    // `.assemblies.json`, written at build time) and source contents (via
+    // edit requests), and re-sends any file whose on-disk timestamp moved
+    // before answering each query - so results always reflect what is on
+    // disk, not what was there at startup.
+    class ANALYSER_SESSION: Disposable is
+        _project_directory: string;
+        _options: JsonSerializerOptions;
+        _process: Process?;
+        _response_file: string?;
+        _mtimes: MAP[string, System.DateTime];
+        _stderr_capture: StringBuilder;
+
+        init(project_directory: string) is
+            _project_directory = Path.get_full_path(project_directory);
+            _options = JsonSerializerOptions();
+
+            // Union constructor args surface as public CLR fields, which
+            // System.Text.Json skips by default.
+            _options.include_fields = true;
+
+            _mtimes = MAP[string, System.DateTime]();
+            _stderr_capture = StringBuilder();
+        si
+
+        project_directory: string => _project_directory;
+
+        is_running: bool => _process? /\ !_process.has_exited;
+
+        // Relative paths of every ghūl source under the project, skipping
+        // build output directories.
+        find_sources() -> LIST[string] is
+            let absolute = LIST[string]();
+
+            add_sources(_project_directory, absolute);
+
+            let result = LIST[string]();
+
+            for path in absolute do
+                result.add(Path.get_relative_path(_project_directory, path));
+            od
+
+            return result;
+        si
+
+        add_sources(directory: string, result: LIST[string]) is
+            let name = Path.get_file_name(directory);
+
+            if name =~ "bin" \/ name =~ "obj" \/ name =~ "publish" \/ name =~ ".git" then
+                return;
+            fi
+
+            for f in Directory.get_files(directory, "*.ghul") do
+                result.add(f);
+            od
+
+            for d in Directory.get_directories(directory) do
+                add_sources(d, result);
+            od
+        si
+
+        start() is
+            let assemblies_json_path = Path.combine(_project_directory, ".assemblies.json");
+
+            if !File.exists(assemblies_json_path) then
+                generate_assemblies_json();
+            fi
+
+            if !File.exists(assemblies_json_path) then
+                throw Exception("could not produce .assemblies.json in {_project_directory} - is this a ghūl project with its dotnet tools restored?");
+            fi
+
+            let assemblies_file = JsonSerializer.deserialize[ASSEMBLIES_FILE](File.read_all_text(assemblies_json_path), _options);
+
+            if !assemblies_file? \/ !assemblies_file.assemblies? then
+                throw Exception("could not read an assemblies list from {assemblies_json_path}");
+            fi
+
+            let arguments = LIST[string]();
+
+            for assembly in assemblies_file.assemblies do
+                arguments.add("-a");
+                arguments.add(assembly);
+            od
+
+            arguments.add("-A");
+
+            let response_file = Path.combine(_project_directory, ".ghul-mcp-{System.Guid.new_guid()}.rsp");
+            let line = StringBuilder();
+
+            for argument in arguments do
+                line.append("\"{argument}\" ");
+            od
+
+            File.write_all_text(response_file, line.to_string());
+            _response_file = response_file;
+
+            let start_info = ProcessStartInfo();
+
+            start_info.file_name = "dotnet";
+            start_info.arguments = "ghul-compiler @\"{response_file}\"";
+            start_info.working_directory = _project_directory;
+
+            start_info.use_shell_execute = false;
+            start_info.redirect_standard_input = true;
+            start_info.redirect_standard_output = true;
+            start_info.redirect_standard_error = true;
+
+            start_info.standard_input_encoding = UTF8Encoding();
+            start_info.standard_output_encoding = UTF8Encoding();
+            start_info.standard_error_encoding = UTF8Encoding();
+
+            let started = Process.start(start_info);
+
+            if !started? then
+                throw Exception("failed to start dotnet ghul-compiler in {_project_directory}");
+            fi
+
+            _process = started;
+
+            // Drain stderr in the background so a chatty analyser doesn't
+            // fill its stderr pipe and block.
+            Tasks.TASK.run(
+                () is
+                    try
+                        do
+                            let stderr_line = started.standard_error.read_line();
+
+                            if !stderr_line? then
+                                break;
+                            fi
+
+                            _stderr_capture.append(stderr_line);
+                            _stderr_capture.append('\n');
+                        od
+                    catch ex: Exception
+                    yrt
+                si
+            );
+
+            let first = read_response();
+
+            if !isa Response.LISTEN(first) then
+                throw Exception("expected listen as the analyser's first response - is the ghul.compiler tool restored in {_project_directory}?\nstderr so far:\n{_stderr_capture}");
+            fi
+
+            _mtimes.clear();
+        si
+
+        // Ask MSBuild to write the project's reference-assembly list; the
+        // target ships in the ghūl runtime's build targets.
+        generate_assemblies_json() is
+            let start_info = ProcessStartInfo();
+
+            start_info.file_name = "dotnet";
+            start_info.arguments = "build -verbosity:quiet -t:GenerateAssembliesJson";
+            start_info.working_directory = _project_directory;
+
+            start_info.use_shell_execute = false;
+            start_info.redirect_standard_output = true;
+            start_info.redirect_standard_error = true;
+
+            let process = Process.start(start_info);
+
+            if process? then
+                process.standard_output.read_to_end();
+                process.standard_error.read_to_end();
+                process.wait_for_exit(120000);
+            fi
+        si
+
+        // Send every new or on-disk-changed source and swallow the
+        // diagnostics response the edit provokes. Spawns the analyser if it
+        // isn't running.
+        ensure_fresh() is
+            if !is_running then
+                dispose_process();
+                start();
+            fi
+
+            let changed = LIST[EDIT_FILE]();
+
+            for path in find_sources() do
+                let absolute = Path.combine(_project_directory, path);
+                let stamp = File.get_last_write_time_utc(absolute);
+
+                if !_mtimes.contains_key(path) \/ _mtimes[path] != stamp then
+                    changed.add(EDIT_FILE(path, File.read_all_text(absolute)));
+                    _mtimes[path] = stamp;
+                fi
+            od
+
+            if changed.count > 0 then
+                write_request(Request.EDIT(changed));
+                read_response();
+            fi
+        si
+
+        // Full-project diagnostics: freshen, compile, return the compile's
+        // diagnostics response.
+        compile_diagnostics() -> Response.DIAGNOSTICS is
+            ensure_fresh();
+            write_request(Request.COMPILE());
+
+            let response = read_response();
+
+            if let diagnostics: Response.DIAGNOSTICS = response then
+                return diagnostics;
+            fi
+
+            throw unexpected("diagnostics", response);
+        si
+
+        hover(path: string, line: int, column: int) -> Response.HOVER is
+            let response = query(Request.HOVER(path, line, column));
+
+            if let hover_response: Response.HOVER = response then
+                return hover_response;
+            fi
+
+            throw unexpected("hover", response);
+        si
+
+        definition(path: string, line: int, column: int) -> Response.DEFINITION is
+            let response = query(Request.DEFINITION(path, line, column));
+
+            if let definition_response: Response.DEFINITION = response then
+                return definition_response;
+            fi
+
+            throw unexpected("definition", response);
+        si
+
+        references(path: string, line: int, column: int) -> Response.REFERENCES is
+            let response = query(Request.REFERENCES(path, line, column));
+
+            if let references_response: Response.REFERENCES = response then
+                return references_response;
+            fi
+
+            throw unexpected("references", response);
+        si
+
+        implementation(path: string, line: int, column: int) -> Response.IMPLEMENTATION is
+            let response = query(Request.IMPLEMENTATION(path, line, column));
+
+            if let implementation_response: Response.IMPLEMENTATION = response then
+                return implementation_response;
+            fi
+
+            throw unexpected("implementation", response);
+        si
+
+        // Workspace-wide when path is empty.
+        symbols(path: string) -> Response.SYMBOLS is
+            let response = query(Request.SYMBOLS(path));
+
+            if let symbols_response: Response.SYMBOLS = response then
+                return symbols_response;
+            fi
+
+            throw unexpected("symbols", response);
+        si
+
+        unexpected(wanted: string, response: Response) -> Exception =>
+            Exception("expected a {wanted} response but got {response.get_type().name}.\nstderr so far:\n{_stderr_capture}");
+
+        // Freshen, send, and read past any unsolicited diagnostics frame - a
+        // query that misses its cache falls through to a full compile, which
+        // writes a diagnostics response before the query's own. A restart
+        // response means the analyser's watchdog wants to recycle the
+        // process: honour it and retry once against a fresh process.
+        query(request: Request) -> Response is
+            ensure_fresh();
+            write_request(request);
+
+            let response mut = read_response();
+
+            if isa Response.DIAGNOSTICS(response) then
+                response = read_response();
+            fi
+
+            if isa Response.RESTART(response) then
+                dispose_process();
+                ensure_fresh();
+                write_request(request);
+
+                response = read_response();
+
+                if isa Response.DIAGNOSTICS(response) then
+                    response = read_response();
+                fi
+            fi
+
+            return response;
+        si
+
+        write_request(request: Request) is
+            let process = _process;
+
+            if !process? then
+                throw Exception("analyser process is not running");
+            fi
+
+            process.standard_input.write(JsonSerializer.serialize[Request](request, _options));
+            process.standard_input.write("\n");
+            process.standard_input.flush();
+        si
+
+        // One JSON object per line; read characters to the newline and
+        // deserialize.
+        read_response() -> Response is
+            let process = _process;
+
+            if !process? then
+                throw Exception("analyser process is not running");
+            fi
+
+            let buffer = StringBuilder();
+
+            do
+                let c = process.standard_output.read();
+
+                if c < 0 then
+                    throw Exception("analyser stdout closed before a response line.\nbuffer so far:\n{buffer}\nstderr so far:\n{_stderr_capture}");
+                fi
+
+                if c == 10 then
+                    break;
+                fi
+
+                if c != 13 then
+                    buffer.append(cast char(c));
+                fi
+            od
+
+            let response = JsonSerializer.deserialize[Response](buffer.to_string(), _options);
+
+            if !response? then
+                throw Exception("analyser returned null deserialising response: {buffer}");
+            fi
+
+            return response;
+        si
+
+        dispose_process() is
+            if let process: Process = _process then
+                try
+                    process.standard_input.close();
+                catch ex: Exception
+                yrt
+
+                if !process.wait_for_exit(2000) then
+                    try
+                        process.kill();
+                    catch ex: Exception
+                    yrt
+                fi
+            fi
+
+            _process = null;
+            _mtimes.clear();
+
+            if let response_file: string = _response_file then
+                try
+                    File.delete(response_file);
+                catch ex: Exception
+                yrt
+
+                _response_file = null;
+            fi
+        si
+
+        dispose() is
+            dispose_process();
+        si
+    si
+si

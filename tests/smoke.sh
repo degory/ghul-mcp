@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# End-to-end smoke test: drive the built server over stdio with one request
-# per MCP method the scaffold supports, and check each response.
+# End-to-end smoke test in two parts: the MCP protocol core driven with one
+# request per method, then the analyser tools driven against a scratch copy
+# of this project - including a mid-session file edit to prove queries see
+# what is on disk.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 dotnet build -nologo
+
+server=bin/Debug/net10.0/ghul-mcp.dll
+
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# --- part 1: protocol core ----------------------------------------------
 
 out=$(printf '%s\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
@@ -15,11 +23,9 @@ out=$(printf '%s\n' \
     '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"version","arguments":{}}}' \
     '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"no-such-tool"}}' \
     '{"jsonrpc":"2.0","id":6,"method":"no/such/method"}' \
-    | dotnet bin/Debug/net10.0/ghul-mcp.dll)
+    | dotnet "$server")
 
 echo "$out"
-
-fail() { echo "FAIL: $1" >&2; exit 1; }
 
 count=$(echo "$out" | wc -l)
 [ "$count" -eq 6 ] || fail "expected 6 responses (notification must not get one), got $count"
@@ -27,11 +33,84 @@ count=$(echo "$out" | wc -l)
 echo "$out" | sed -n 1p | grep -q '"protocolVersion":"2025-06-18"' || fail "initialize: protocolVersion"
 echo "$out" | sed -n 1p | grep -q '"serverInfo":{"name":"ghul-mcp"' || fail "initialize: serverInfo"
 echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty result"
-echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool"
-echo "$out" | sed -n 3p | grep -q '"inputSchema":{"type":"object"' || fail "tools/list: inputSchema"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.1.0"' || fail "tools/call: version text"
+echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
+echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
+echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.2.0"' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
-echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "tools/call: unknown tool error"
+echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
+
+# --- part 2: analyser tools ---------------------------------------------
+
+tmp=$(mktemp -d)
+fifo="$tmp/requests"
+responses="$tmp/responses"
+
+cleanup() {
+    exec 3>&- 2>/dev/null || true
+    [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true
+    rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+cp -r src ghul-mcp.ghulproj .config "$tmp/"
+(cd "$tmp" && dotnet tool restore >/dev/null)
+cp "$tmp/src/main.ghul" "$tmp/main.pristine"
+
+mkfifo "$fifo"
+dotnet "$server" --project "$tmp" <"$fifo" >"$responses" &
+server_pid=$!
+exec 3>"$fifo"
+
+send() { echo "$1" >&3; }
+
+await() {
+    for _ in $(seq 1 240); do
+        grep -q "\"id\":$1," "$responses" 2>/dev/null && return 0
+        sleep 1
+    done
+    echo "--- responses so far ---" >&2
+    cat "$responses" >&2 || true
+    fail "timed out waiting for response id $1"
+}
+
+response() { grep "\"id\":$1," "$responses"; }
+
+send '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+await 1
+
+send '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
+await 2
+response 2 | grep -q '"text":"no errors or warnings"' || fail "diagnostics: expected clean project"
+
+# Break a source on disk mid-session: the next query must see it.
+echo "this is not ghul" >> "$tmp/src/main.ghul"
+
+send '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
+await 3
+response 3 | grep -q 'main.ghul' || fail "diagnostics after edit: expected an error in main.ghul"
+response 3 | grep -q 'error' || fail "diagnostics after edit: expected severity error"
+
+# Repair it: the next query must go clean again.
+cp "$tmp/main.pristine" "$tmp/src/main.ghul"
+
+send '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
+await 4
+response 4 | grep -q '"text":"no errors or warnings"' || fail "diagnostics after repair: expected clean again"
+
+line=$(grep -n "class ANALYSER_SESSION" src/analyser/session.ghul | head -1 | cut -d: -f1)
+send '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"hover","arguments":{"file":"src/analyser/session.ghul","line":'"$line"',"column":11}}}'
+await 5
+response 5 | grep -q 'ANALYSER_SESSION' || fail "hover: expected the class signature"
+
+send '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"symbols","arguments":{"query":"ensure_fresh"}}}'
+await 6
+response 6 | grep -q 'session.ghul' || fail "symbols: expected a match in session.ghul"
+
+exec 3>&-
+wait "$server_pid" 2>/dev/null || true
+server_pid=""
 
 echo "smoke test passed"

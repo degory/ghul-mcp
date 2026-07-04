@@ -28,7 +28,7 @@ namespace MCP is
         // Serve until end of input.
         run() is
             do
-                let request: REQUEST? mut;
+                let request: REQUEST? mut = null;
 
                 try
                     request = WIRE.read_request(_reader);

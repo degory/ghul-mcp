@@ -108,6 +108,23 @@ namespace MCP is
             return null;
         si
 
+        // Fetch an integer-valued property; 0 if the element isn't an
+        // object, lacks the property, or the property isn't a number.
+        try_get_int(element: JsonElement, name: string) -> int static is
+            if element.value_kind == JsonValueKind.OBJECT then
+                try
+                    let property = element.get_property(name);
+
+                    if property.value_kind == JsonValueKind.NUMBER then
+                        return property.get_int32();
+                    fi
+                catch ex: Collections.KeyNotFoundException
+                yrt
+            fi
+
+            return 0;
+        si
+
         // Fetch an arbitrary property; an undefined JsonElement if absent.
         try_get_element(element: JsonElement, name: string) -> JsonElement static is
             if element.value_kind == JsonValueKind.OBJECT then
