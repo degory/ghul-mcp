@@ -10,4 +10,13 @@ Written in ghūl, consuming the `ghul.analysis.protocol` client library.
 
 ## Status
 
-Early scaffolding — not yet functional.
+The MCP core works: initialize, ping, tools/list and tools/call over stdio,
+with a placeholder `version` tool. The analysis-mode tools are not wired up
+yet.
+
+## Build and test
+
+```sh
+dotnet tool restore
+./tests/smoke.sh
+```

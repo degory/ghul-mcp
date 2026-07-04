@@ -1,0 +1,29 @@
+use IO.Std;
+
+VERSION: string => "0.1.0";
+
+entry() is
+    Std.input_encoding = System.Text.UTF8Encoding(false);
+    Std.output_encoding = System.Text.UTF8Encoding(false);
+
+    let reader =
+        IO.StreamReader(
+            Std.open_standard_input(),
+            System.Text.UTF8Encoding(false),
+            false,
+            65536
+        );
+
+    let server = MCP.SERVER(reader, Std.out, "ghul-mcp", VERSION);
+
+    server.add_tool(
+        MCP.TOOL(
+            "version",
+            "report the ghul-mcp server version",
+            "{{\"type\": \"object\", \"properties\": {{}}}}",
+            arguments => "ghul-mcp {VERSION}"
+        )
+    );
+
+    server.run();
+si
