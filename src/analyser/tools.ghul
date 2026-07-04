@@ -2,8 +2,16 @@ namespace Analyser is
     use System.Text.StringBuilder;
     use System.Text.Json.JsonElement;
 
+    use Collections.LIST;
+
     use Analysis.Protocol.DIAGNOSTIC;
     use Analysis.Protocol.LOCATION_DTO;
+    use Analysis.Protocol.SYMBOL_DTO;
+    use Analysis.Protocol.COMPLETION_ITEM;
+    use Analysis.Protocol.Response;
+
+    use IO.File;
+    use IO.Path;
 
     use MCP.SERVER;
     use MCP.TOOL;
@@ -19,6 +27,16 @@ namespace Analyser is
             "\"line\": {{\"type\": \"integer\", \"description\": \"1-based line\"}},"
             "\"column\": {{\"type\": \"integer\", \"description\": \"1-based column\"}}"
             "}}, \"required\": [\"file\", \"line\", \"column\"]}}";
+
+        NAME_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "\"name\": {{\"type\": \"string\", \"description\": \"exact symbol name (case-insensitive); leading identifier of a declaration, e.g. `ANALYSER_SESSION`, `render_custom_attribute_line`\"}}"
+            "}}, \"required\": [\"name\"]}}";
+
+        TYPE_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "\"type\": {{\"type\": \"string\", \"description\": \"type expression as it would appear in ghūl source, e.g. `System.Text.StringBuilder`, `Semantic.Symbols.SIGNATURE_PART`, `Collections.LIST[string]`; fully-qualified for imported types\"}}"
+            "}}, \"required\": [\"type\"]}}";
 
         register(server: SERVER, session: ANALYSER_SESSION) static is
             server.add_tool(
@@ -76,6 +94,51 @@ namespace Analyser is
                     arguments => run_symbols(session, arguments)
                 )
             );
+
+            server.add_tool(
+                TOOL(
+                    "hover_of",
+                    "signature and kind of a symbol looked up by name (case-insensitive); returns the candidate list when multiple symbols share the name",
+                    NAME_SCHEMA,
+                    arguments => run_by_name(session, arguments, "hover")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "definition_of",
+                    "declaration location of a symbol looked up by name",
+                    NAME_SCHEMA,
+                    arguments => run_by_name(session, arguments, "definition")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "references_of",
+                    "all references to a symbol looked up by name",
+                    NAME_SCHEMA,
+                    arguments => run_by_name(session, arguments, "references")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "implementations_of",
+                    "trait implementations or method overrides for a symbol looked up by name",
+                    NAME_SCHEMA,
+                    arguments => run_by_name(session, arguments, "implementations")
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "members",
+                    "list the members of a type: fields, properties, methods, plus inherited members and (for a union) its variants. Works for ghūl-declared and imported types; pass the type as it would appear in ghūl source",
+                    TYPE_SCHEMA,
+                    arguments => run_members(session, arguments)
+                )
+            );
         si
 
         run_diagnostics(session: ANALYSER_SESSION) -> string static is
@@ -113,6 +176,11 @@ namespace Analyser is
 
         run_hover(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
             let position = read_position(arguments);
+
+            return hover_at(session, position);
+        si
+
+        hover_at(session: ANALYSER_SESSION, position: POSITION) -> string static is
             let response = session.hover(position.file, position.line, position.column);
 
             if response.signature.length == 0 then
@@ -129,6 +197,10 @@ namespace Analyser is
         run_position_locations(session: ANALYSER_SESSION, arguments: JsonElement, which: string) -> string static is
             let position = read_position(arguments);
 
+            return locations_at(session, position, which);
+        si
+
+        locations_at(session: ANALYSER_SESSION, position: POSITION, which: string) -> string static is
             let locations =
                 if which =~ "definition" then
                     session.definition(position.file, position.line, position.column).locations
@@ -167,12 +239,7 @@ namespace Analyser is
                 for symbol in file.symbols do
                     if query.length == 0 \/ symbol.search_description.to_lower_invariant().contains(query) then
                         if count < MAX_SYMBOL_MATCHES then
-                            result.append("{symbol.search_description} - {file.path}:{symbol.start_line}:{symbol.start_column}");
-
-                            if symbol.qualifier.length > 0 then
-                                result.append(" (in {symbol.qualifier})");
-                            fi
-
+                            result.append(render_symbol_line(file.path, symbol));
                             result.append("\n");
                         fi
 
@@ -191,6 +258,171 @@ namespace Analyser is
 
             return result.to_string();
         si
+
+        render_symbol_line(file_path: string, symbol: SYMBOL_DTO) -> string static is
+            let result = StringBuilder();
+
+            result.append("{symbol.search_description} - {file_path}:{symbol.start_line}:{symbol.start_column}");
+
+            if symbol.qualifier.length > 0 then
+                result.append(" (in {symbol.qualifier})");
+            fi
+
+            return result.to_string();
+        si
+
+        // Name-based dispatch: resolve `name` to the symbol(s) whose leading
+        // identifier matches (case-insensitive), and either run the position
+        // query for the unique hit or return a candidate list so the caller
+        // can pick one and re-query.
+        run_by_name(session: ANALYSER_SESSION, arguments: JsonElement, which: string) -> string static is
+            let name = WIRE.try_get_string(arguments, "name");
+
+            if !name? \/ name.length == 0 then
+                throw System.Exception("name argument is required");
+            fi
+
+            let matches = resolve_name(session, name);
+
+            if matches.count == 0 then
+                return "no symbol named {name} (try `symbols` for a substring search)";
+            fi
+
+            if matches.count > 1 then
+                return render_candidates(name, matches);
+            fi
+
+            let match = matches[0];
+            let position = locate_identifier(session, match, name);
+
+            if which =~ "hover" then
+                return hover_at(session, position);
+            fi
+
+            return locations_at(session, position, which);
+        si
+
+        // A symbol match paired with the file it lives in.
+        resolve_name(session: ANALYSER_SESSION, name: string) -> LIST[SYMBOL_MATCH] static is
+            let target = name.to_lower_invariant();
+            let response = session.symbols("");
+            let matches = LIST[SYMBOL_MATCH]();
+
+            for file in response.files do
+                for symbol in file.symbols do
+                    let leading = extract_leading_identifier(symbol.search_description).to_lower_invariant();
+
+                    if leading =~ target then
+                        matches.add(SYMBOL_MATCH(file.path, symbol));
+                    fi
+                od
+            od
+
+            return matches;
+        si
+
+        // The analyser's SYMBOL_DTO points at the *start* of the declaration,
+        // which for a class/trait/struct/union is the keyword rather than the
+        // identifier - and hover/references at the keyword return nothing. Read
+        // the declaration line off disk and find the identifier's column. Fall
+        // back to the reported start column if the file can't be read.
+        locate_identifier(session: ANALYSER_SESSION, match: SYMBOL_MATCH, name: string) -> POSITION static is
+            let default_position = POSITION(match.file, match.symbol.start_line, match.symbol.start_column);
+            let full_path = Path.combine(session.project_directory, match.file);
+
+            if !File.exists(full_path) then
+                return default_position;
+            fi
+
+            try
+                let lines = File.read_all_lines(full_path);
+
+                if match.symbol.start_line < 1 \/ match.symbol.start_line > lines.count then
+                    return default_position;
+                fi
+
+                let line_text = lines[match.symbol.start_line - 1];
+                let index = line_text.to_lower_invariant().index_of(name.to_lower_invariant());
+
+                if index >= 0 then
+                    return POSITION(match.file, match.symbol.start_line, index + 1);
+                fi
+            catch ex: System.Exception
+            yrt
+
+            return default_position;
+        si
+
+        // Extract the leading identifier of a symbol's search description:
+        // characters up to but not including the first non-identifier
+        // character. A method's description starts with its name, then `(`;
+        // a type's description is just its name.
+        extract_leading_identifier(description: string) -> string static is
+            let end mut = 0;
+
+            for c in description do
+                if !((c >= 'a' /\ c <= 'z') \/ (c >= 'A' /\ c <= 'Z') \/ (c >= '0' /\ c <= '9') \/ c == '_') then
+                    break;
+                fi
+
+                end = end + 1;
+            od
+
+            return description.substring(0, end);
+        si
+
+        render_candidates(name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
+            let result = StringBuilder();
+
+            result.append("{matches.count} symbols share the name {name} - call the position-based tool (`hover`, `references`, ...) at one of these locations:\n");
+
+            for match in matches do
+                result.append(render_symbol_line(match.file, match.symbol));
+                result.append("\n");
+            od
+
+            return result.to_string();
+        si
+
+        MAX_MEMBERS: int static => 200;
+
+        run_members(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
+            let type_expression = WIRE.try_get_string(arguments, "type");
+
+            if !type_expression? \/ type_expression.length == 0 then
+                throw System.Exception("type argument is required");
+            fi
+
+            let response = session.probe_members(type_expression);
+
+            if response.items.count == 0 then
+                return "no members found for {type_expression} - was the type expression valid? Fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`";
+            fi
+
+            let result = StringBuilder();
+            let count mut = 0;
+
+            for item in response.items do
+                if count < MAX_MEMBERS then
+                    result.append(render_completion_item(item));
+                    result.append("\n");
+                fi
+
+                count = count + 1;
+            od
+
+            if count > MAX_MEMBERS then
+                result.append("... and {count - MAX_MEMBERS} more members not shown\n");
+            fi
+
+            return result.to_string();
+        si
+
+        // The completion item's description already carries its natural
+        // classifier ("... // instance property", "... // function group"),
+        // so it renders as-is; adding an LSP kind label on top would be
+        // redundant.
+        render_completion_item(item: COMPLETION_ITEM) -> string static => item.description;
 
         read_position(arguments: JsonElement) -> POSITION static is
             let file = WIRE.try_get_string(arguments, "file");
@@ -219,6 +451,16 @@ namespace Analyser is
             self.file = file;
             self.line = line;
             self.column = column;
+        si
+    si
+
+    class SYMBOL_MATCH is
+        file: string public;
+        symbol: SYMBOL_DTO public;
+
+        init(file: string, symbol: SYMBOL_DTO) is
+            self.file = file;
+            self.symbol = symbol;
         si
     si
 si

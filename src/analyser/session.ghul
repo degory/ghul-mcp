@@ -290,6 +290,59 @@ namespace Analyser is
             throw unexpected("symbols", response);
         si
 
+        // Probe the members of a type by asking the analyser what would
+        // complete after `x.` in a synthesized scratch file. Handles both
+        // ghūl-declared and imported types, since completion uses the same
+        // symbol table `hover` and `references` do. The scratch file is
+        // written into the analyser via edit, queried, and then cleared to
+        // an empty file so it stays out of subsequent full compiles.
+        probe_members(type_expression: string) -> Response.COMPLETION is
+            let path = ".ghul-mcp-scratch.ghul";
+
+            let source =
+                "namespace GhulMcpScratch is\n"
+                "    probe(x: {type_expression}) is\n"
+                "        x.\n"
+                "    si\n"
+                "si\n";
+
+            ensure_fresh();
+
+            // The completion is at the character position just after `x.` -
+            // 8 leading spaces + `x` + `.` = column 11 on line 3.
+            let line = 3;
+            let column = 11;
+
+            let probe_edits = LIST[EDIT_FILE]();
+
+            probe_edits.add(EDIT_FILE(path, source));
+            write_request(Request.EDIT(probe_edits));
+            read_response();
+
+            write_request(Request.COMPLETE(path, line, column));
+
+            let response mut = read_response();
+
+            if isa Response.DIAGNOSTICS(response) then
+                response = read_response();
+            fi
+
+            // Clear the scratch file so it doesn't contribute to future
+            // compiles. It never existed on disk, so ensure_fresh won't
+            // re-touch it.
+            let clear_edits = LIST[EDIT_FILE]();
+
+            clear_edits.add(EDIT_FILE(path, ""));
+            write_request(Request.EDIT(clear_edits));
+            read_response();
+
+            if let completion: Response.COMPLETION = response then
+                return completion;
+            fi
+
+            throw unexpected("completion", response);
+        si
+
         unexpected(wanted: string, response: Response) -> Exception =>
             Exception("expected a {wanted} response but got {response.get_type().name}.\nstderr so far:\n{_stderr_capture}");
 

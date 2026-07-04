@@ -10,8 +10,16 @@ Written in ghūl, consuming the `ghul.analysis.protocol` client library.
 
 ## Status
 
-Working. Tools: `diagnostics`, `hover`, `definition`, `references`,
-`implementations`, `symbols` (workspace-wide substring search), `version`.
+Working. Tools:
+
+- Position-based: `diagnostics`, `hover`, `definition`, `references`,
+  `implementations`.
+- Name-based: `symbols` (substring search), `hover_of`, `definition_of`,
+  `references_of`, `implementations_of` (resolve a name and return the
+  answer, or the candidate list when a name is shared).
+- Type-based: `members` (list the members of a type expression - works for
+  ghūl-declared and imported types including `System.*`).
+
 All lines and columns are 1-based, matching compiler diagnostics.
 
 The server drives the target project's own pinned `ghul.compiler` tool in

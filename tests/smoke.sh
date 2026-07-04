@@ -109,6 +109,28 @@ send '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"symbols","
 await 6
 response 6 | grep -q 'session.ghul' || fail "symbols: expected a match in session.ghul"
 
+send '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"hover_of","arguments":{"name":"ANALYSER_SESSION"}}}'
+await 7
+response 7 | grep -q 'ANALYSER_SESSION' || fail "hover_of: expected class signature"
+response 7 | grep -q '"isError":false' || fail "hover_of: unexpected error"
+
+send '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"references_of","arguments":{"name":"ANALYSER_SESSION"}}}'
+await 8
+response 8 | grep -q 'tools.ghul' || fail "references_of: expected uses in tools.ghul"
+
+send '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"hover_of","arguments":{"name":"init"}}}'
+await 9
+response 9 | grep -q 'share the name init' || fail "hover_of ambiguous: expected candidate list"
+
+send '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"hover_of","arguments":{"name":"no_such_symbol_xyz"}}}'
+await 10
+response 10 | grep -q 'no symbol named' || fail "hover_of unknown: expected miss message"
+
+send '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"members","arguments":{"type":"System.Text.StringBuilder"}}}'
+await 11
+response 11 | grep -q 'append' || fail "members(StringBuilder): expected append in members"
+response 11 | grep -q 'length' || fail "members(StringBuilder): expected length property"
+
 exec 3>&-
 wait "$server_pid" 2>/dev/null || true
 server_pid=""
