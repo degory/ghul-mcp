@@ -1,0 +1,27 @@
+namespace MCP is
+    use System.Text.Json.JsonElement;
+
+    // A tool exposed over tools/list and tools/call. The input schema is
+    // declared as a JSON literal and parsed once: schemas are static data,
+    // and keeping them as text avoids hand-assembled DTO trees for
+    // arbitrarily nested JSON Schema.
+    //
+    // The public fields are exactly the tools/list wire shape; the server
+    // serializes TOOL values directly.
+    class TOOL is
+        name: string public;
+        description: string public;
+        input_schema: JsonElement public;
+
+        _handler: (JsonElement) -> string;
+
+        init(name: string, description: string, schema_json: string, handler: (JsonElement) -> string) is
+            self.name = name;
+            self.description = description;
+            input_schema = System.Text.Json.JsonSerializer.deserialize[JsonElement](schema_json, WIRE.options);
+            _handler = handler;
+        si
+
+        call(arguments: JsonElement) -> string => _handler(arguments);
+    si
+si
