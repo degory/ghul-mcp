@@ -125,6 +125,38 @@ namespace MCP is
             return 0;
         si
 
+        // Fetch a string-array property; an empty list if the element
+        // isn't an object, lacks the property, the property isn't an array,
+        // or an element isn't a string.
+        try_get_string_array(element: JsonElement, name: string) -> Collections.LIST[string] static is
+            let result = Collections.LIST[string]();
+
+            if element.value_kind != JsonValueKind.OBJECT then
+                return result;
+            fi
+
+            try
+                let property = element.get_property(name);
+
+                if property.value_kind != JsonValueKind.ARRAY then
+                    return result;
+                fi
+
+                for item in property.enumerate_array() do
+                    if item.value_kind == JsonValueKind.STRING then
+                        let text = item.get_string();
+
+                        if text? then
+                            result.add(text);
+                        fi
+                    fi
+                od
+            catch ex: Collections.KeyNotFoundException
+            yrt
+
+            return result;
+        si
+
         // Fetch an arbitrary property; an undefined JsonElement if absent.
         try_get_element(element: JsonElement, name: string) -> JsonElement static is
             if element.value_kind == JsonValueKind.OBJECT then

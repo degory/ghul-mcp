@@ -56,6 +56,12 @@ namespace Analyser is
             "{PROJECT_PROPERTY}"
             "}}}}";
 
+        DIAGNOSTICS_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "\"hints_for\": {{\"type\": \"array\", \"items\": {{\"type\": \"string\"}}, \"description\": \"project-relative source paths to include editor-only hint diagnostics (narrowing, narrowing-kill, and similar) for. Empty or absent suppresses all hints - hints are otherwise dropped because ghul-mcp doesn't tell the analyser what's open.\"}},"
+            "{PROJECT_PROPERTY}"
+            "}}}}";
+
         QUERY_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "\"query\": {{\"type\": \"string\", \"description\": \"case-insensitive substring to filter symbol descriptions; empty or omitted returns all\"}},"
@@ -71,9 +77,9 @@ namespace Analyser is
             server.add_tool(
                 TOOL(
                     "diagnostics",
-                    "compile the ghūl project and report all errors and warnings",
-                    PROJECT_ONLY_SCHEMA,
-                    arguments => run_diagnostics(session_from(pool, arguments))
+                    "compile the ghūl project and report errors and warnings. Optionally include editor-only hint diagnostics (narrowing / narrowing-kill etc.) for specific files by listing their project-relative paths in `hints_for`",
+                    DIAGNOSTICS_SCHEMA,
+                    arguments => run_diagnostics(session_from(pool, arguments), arguments)
                 )
             );
 
@@ -203,8 +209,9 @@ namespace Analyser is
             return result.to_string();
         si
 
-        run_diagnostics(session: ANALYSER_SESSION) -> string static is
-            let response = session.compile_diagnostics();
+        run_diagnostics(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
+            let hints_for = WIRE.try_get_string_array(arguments, "hints_for");
+            let response = session.compile_diagnostics(hints_for);
             let result = StringBuilder();
             let count mut = 0;
 
