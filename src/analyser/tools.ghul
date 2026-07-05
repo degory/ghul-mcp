@@ -7,7 +7,7 @@ namespace Analyser is
     use Analysis.Protocol.DIAGNOSTIC;
     use Analysis.Protocol.LOCATION_DTO;
     use Analysis.Protocol.SYMBOL_DTO;
-    use Analysis.Protocol.COMPLETION_ITEM;
+    use Analysis.Protocol.MEMBER_DTO;
     use Analysis.Protocol.Response;
 
     use IO.File;
@@ -469,19 +469,36 @@ namespace Analyser is
                 throw System.Exception("type argument is required");
             fi
 
-            let response = session.probe_members(type_expression);
+            let response = session.describe_type(type_expression);
 
-            if response.items.count == 0 then
-                return "no members found for {type_expression} - was the type expression valid? Fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`";
+            if response.resolved_name.length == 0 then
+                return "no type named {type_expression} - fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`";
             fi
 
             let result = StringBuilder();
+
+            result.append("{response.type_kind} {response.resolved_name}\n");
+
+            if response.ancestors.count > 0 then
+                result.append("ancestors:\n");
+
+                for ancestor in response.ancestors do
+                    result.append("  {ancestor}\n");
+                od
+            fi
+
+            if response.members.count == 0 then
+                result.append("no members\n");
+                return result.to_string();
+            fi
+
+            result.append("members:\n");
+
             let count mut = 0;
 
-            for item in response.items do
+            for member in response.members do
                 if count < MAX_MEMBERS then
-                    result.append(render_completion_item(item));
-                    result.append("\n");
+                    result.append("  {render_member(member)}\n");
                 fi
 
                 count = count + 1;
@@ -494,11 +511,16 @@ namespace Analyser is
             return result.to_string();
         si
 
-        // The completion item's description already carries its natural
-        // classifier ("... // instance property", "... // function group"),
-        // so it renders as-is; adding an LSP kind label on top would be
-        // redundant.
-        render_completion_item(item: COMPLETION_ITEM) -> string static => item.description;
+        // The description already carries the natural classifier
+        // ("... // instance property", "... // function group"). Append the
+        // inherited-from qualifier when the analyser attributed the member
+        // to an ancestor so the caller can distinguish direct vs. inherited.
+        render_member(member: MEMBER_DTO) -> string static =>
+            if member.is_inherited /\ member.inherited_from.length > 0 then
+                "{member.description} [from {member.inherited_from}]"
+            else
+                member.description
+            fi;
 
         read_position(arguments: JsonElement) -> POSITION static is
             let file = WIRE.try_get_string(arguments, "file");
