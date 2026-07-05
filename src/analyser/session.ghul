@@ -106,20 +106,184 @@ namespace Analyser is
 
         is_running: bool => _process? /\ !_process.has_exited;
 
-        // Relative paths of every ghūl source under the project, skipping
-        // build output directories.
+        // Relative paths of every ghūl source the .ghulproj glob (or globs)
+        // would include. Falls back to a whole-tree walk if the .ghulproj
+        // can't be read - old repos, unusual layouts. Deduped so a source
+        // matched by two globs is only sent once.
         find_sources() -> LIST[string] is
+            let globs = load_ghulproj_source_globs();
+
+            let seen = Collections.SET[string]();
+            let result = LIST[string]();
+
+            if globs? /\ globs.count > 0 then
+                for glob in globs do
+                    for absolute in expand_glob(glob) do
+                        let relative = Path.get_relative_path(_project_directory, absolute);
+
+                        if !seen.contains(relative) then
+                            seen.add(relative);
+                            result.add(relative);
+                        fi
+                    od
+                od
+
+                return result;
+            fi
+
+            // Fallback for a project directory without a readable .ghulproj:
+            // walk the tree recursively, skipping obvious build outputs.
             let absolute = LIST[string]();
 
             add_sources(_project_directory, absolute);
 
-            let result = LIST[string]();
-
             for path in absolute do
-                result.add(Path.get_relative_path(_project_directory, path));
+                let relative = Path.get_relative_path(_project_directory, path);
+
+                if !seen.contains(relative) then
+                    seen.add(relative);
+                    result.add(relative);
+                fi
             od
 
             return result;
+        si
+
+        // Parse the single .ghulproj under the project directory and return
+        // every `<GhulSources Include="pattern" />` pattern. Null (rather
+        // than an empty list) signals "no readable project file, use the
+        // fallback walk" so a workspace with genuinely no sources doesn't
+        // accidentally trigger a directory sweep.
+        load_ghulproj_source_globs() -> LIST[string]? is
+            let projects = Directory.get_files(_project_directory, "*.ghulproj");
+
+            if projects.count != 1 then
+                return null;
+            fi
+
+            try
+                let document = System.Xml.Linq.XDocument.load(projects[0]);
+                let root = document.root;
+
+                if !root? then
+                    return null;
+                fi
+
+                let result = LIST[string]();
+
+                for element in root.descendants(System.Xml.Linq.XName.get("GhulSources")) do
+                    let include_attr = element.attribute(System.Xml.Linq.XName.get("Include"));
+
+                    if include_attr? then
+                        let value = include_attr.value;
+
+                        if value? /\ value.length > 0 then
+                            result.add(value);
+                        fi
+                    fi
+                od
+
+                return result;
+            catch ex: Exception
+                return null;
+            yrt
+        si
+
+        // Expand one MSBuild-style glob against the project directory. The
+        // common cases the compiler and its sibling projects actually use
+        // are `<prefix>/**/*.ghul`, `**/*.ghul`, `<prefix>/*.ghul`, and a
+        // literal path; anything more exotic falls back to a top-level
+        // enumeration of the pattern's directory.
+        expand_glob(pattern: string) -> LIST[string] is
+            let normalized = pattern.replace('\\', '/');
+            let matches = LIST[string]();
+
+            let recursive_marker = "/**/";
+            let recursive_at = normalized.index_of(recursive_marker);
+
+            if recursive_at >= 0 then
+                let base_relative = normalized.substring(0, recursive_at);
+                let file_pattern = normalized.substring(recursive_at + recursive_marker.length);
+
+                let base_directory =
+                    if base_relative.length > 0 then
+                        Path.combine(_project_directory, base_relative)
+                    else
+                        _project_directory
+                    fi;
+
+                if Directory.exists(base_directory) then
+                    add_files_recursive(base_directory, file_pattern, matches);
+                fi
+
+                return matches;
+            fi
+
+            if normalized.starts_with("**/") then
+                let file_pattern = normalized.substring(3);
+
+                add_files_recursive(_project_directory, file_pattern, matches);
+
+                return matches;
+            fi
+
+            let last_slash = normalized.last_index_of('/');
+
+            if last_slash >= 0 then
+                let base_relative = normalized.substring(0, last_slash);
+                let file_pattern = normalized.substring(last_slash + 1);
+                let base_directory = Path.combine(_project_directory, base_relative);
+
+                if !file_pattern.contains("*") /\ !file_pattern.contains("?") then
+                    let literal = Path.combine(base_directory, file_pattern);
+
+                    if File.exists(literal) then
+                        matches.add(literal);
+                    fi
+
+                    return matches;
+                fi
+
+                if Directory.exists(base_directory) then
+                    for f in Directory.get_files(base_directory, file_pattern) do
+                        matches.add(f);
+                    od
+                fi
+
+                return matches;
+            fi
+
+            let bare = Path.combine(_project_directory, normalized);
+
+            if !normalized.contains("*") /\ !normalized.contains("?") then
+                if File.exists(bare) then
+                    matches.add(bare);
+                fi
+
+                return matches;
+            fi
+
+            for f in Directory.get_files(_project_directory, normalized) do
+                matches.add(f);
+            od
+
+            return matches;
+        si
+
+        add_files_recursive(directory: string, file_pattern: string, result: LIST[string]) is
+            let name = Path.get_file_name(directory);
+
+            if name =~ "bin" \/ name =~ "obj" \/ name =~ "publish" \/ name =~ ".git" then
+                return;
+            fi
+
+            for f in Directory.get_files(directory, file_pattern) do
+                result.add(f);
+            od
+
+            for d in Directory.get_directories(directory) do
+                add_files_recursive(d, file_pattern, result);
+            od
         si
 
         add_sources(directory: string, result: LIST[string]) is
