@@ -424,10 +424,26 @@ namespace Analyser is
             let matches = resolve_name(session, name);
 
             if matches.count == 0 then
-                return "no symbol named {name} (try `symbols` for a substring search)";
+                if which =~ "hover" /\ is_bare_identifier(name) then
+                    let imported = try_resolve_imported_type(session, name);
+
+                    if imported.length > 0 then
+                        return imported;
+                    fi
+                fi
+
+                return "no symbol named {name} (try `symbols` for a substring search, or `members` with a fully-qualified name for imported types)";
             fi
 
             if matches.count > 1 then
+                if which =~ "implementations" then
+                    let collapsed = try_collapse_implementations(session, name, matches);
+
+                    if collapsed.length > 0 then
+                        return collapsed;
+                    fi
+                fi
+
                 return render_candidates(name, matches);
             fi
 
@@ -440,6 +456,107 @@ namespace Analyser is
 
             return locations_at(session, position, which);
         si
+
+        // implementations_of routinely lands on a shared method name where
+        // the candidate list is one base declaration on a trait / abstract
+        // class plus N concrete overrides. The user's real question is
+        // "who overrides X?" - resolvable by chaining `implementations` at
+        // the base. We don't know which candidate is the base a-priori,
+        // so query implementations at every candidate position and union
+        // the results; the base's call returns the whole override set and
+        // the overrides' calls typically return nothing (or dupes we
+        // dedupe). Empty union means no candidate was a base, so the
+        // caller falls back to the ordinary candidate list.
+        try_collapse_implementations(session: ANALYSER_SESSION, name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
+            let ordered = LIST[LOCATION_DTO]();
+            let seen = Collections.SET[string]();
+
+            for match in matches do
+                let position = locate_identifier(session, match, name);
+                let response = session.implementation(position.file, position.line, position.column);
+
+                for location in response.locations do
+                    let key = "{location.file}:{location.start_line}:{location.start_column}";
+
+                    if !seen.contains(key) then
+                        seen.add(key);
+                        ordered.add(location);
+                    fi
+                od
+            od
+
+            if ordered.count == 0 then
+                return "";
+            fi
+
+            let result = StringBuilder();
+
+            for location in ordered do
+                result.append("{render_location(location)}\n");
+            od
+
+            return result.to_string();
+        si
+
+        // Fallback for `hover_of("StringBuilder")` and friends: session
+        // symbols only carries project declarations, so an imported type
+        // referenced only by its short name never matches. Probe common
+        // ambient namespaces via `describe_type` and, if exactly one hit
+        // resolves, render a hover-style summary so the caller sees the
+        // qualified name and can chain a `members` call cleanly.
+        try_resolve_imported_type(session: ANALYSER_SESSION, name: string) -> string static is
+            let candidates = LIST[Analysis.Protocol.Response.DESCRIBE_TYPE]();
+
+            for ns in COMMON_NAMESPACES do
+                let qualified = "{ns}.{name}";
+                let response = session.describe_type(qualified);
+
+                if response.resolved_name.length > 0 then
+                    candidates.add(response);
+                fi
+            od
+
+            if candidates.count == 0 then
+                return "";
+            fi
+
+            if candidates.count > 1 then
+                let disambig = StringBuilder();
+                disambig.append("{candidates.count} imported types share the short name {name}. Try one:\n");
+
+                for candidate in candidates do
+                    disambig.append("  {candidate.resolved_name} ({candidate.type_kind})\n");
+                od
+
+                return disambig.to_string();
+            fi
+
+            let only = candidates[0];
+            return "{only.type_kind} {only.resolved_name} (imported)";
+        si
+
+        // Ambient namespaces that a project typically has in scope but
+        // that ghul-mcp's session.symbols index doesn't cover (imported /
+        // stub-loaded). Ordered roughly by hit rate against the compiler
+        // and its siblings. Adding more is cheap - each probe is a single
+        // describe_type request.
+        COMMON_NAMESPACES: string[] static => [
+            "System",
+            "System.Collections.Generic",
+            "System.Text",
+            "System.IO",
+            "System.Threading",
+            "System.Threading.Tasks",
+            "System.Reflection",
+            "System.Diagnostics",
+            "System.Xml.Linq",
+            "System.Text.Json",
+            "Ghul",
+            "Ghul.Internal",
+            "Collections",
+            "IO",
+            "Tasks"
+        ];
 
         // A symbol match paired with the file it lives in.
         resolve_name(session: ANALYSER_SESSION, name: string) -> LIST[SYMBOL_MATCH] static is
@@ -539,7 +656,21 @@ namespace Analyser is
                 throw System.Exception("type argument is required");
             fi
 
-            let response = session.describe_type(type_expression);
+            let response mut = session.describe_type(type_expression);
+
+            if response.resolved_name.length == 0 /\ is_bare_identifier(type_expression) then
+                let type_matches = resolve_type_name(session, type_expression);
+
+                if type_matches.count == 1 then
+                    let qualified = qualified_name_of(type_matches[0]);
+
+                    if qualified.length > 0 /\ qualified !~ type_expression then
+                        response = session.describe_type(qualified);
+                    fi
+                elif type_matches.count > 1 then
+                    return render_type_candidates(type_expression, type_matches);
+                fi
+            fi
 
             if response.resolved_name.length == 0 then
                 return "no type named {type_expression} - fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`";
@@ -591,6 +722,77 @@ namespace Analyser is
             else
                 member.description
             fi;
+
+        // Whether a `members` type argument looks like a bare identifier
+        // (no dot, no bracket) so the bare-name fallback should try to
+        // resolve it via `symbols`. A dotted or bracketed expression is
+        // assumed to be a fully-qualified type or generic instantiation
+        // and goes straight to describe_type.
+        is_bare_identifier(text: string) -> bool static is
+            if text.length == 0 then
+                return false;
+            fi
+
+            for c in text do
+                if c == '.' \/ c == '[' \/ c == ']' \/ c == ',' \/ c == '(' \/ c == ')' \/ c == ' ' then
+                    return false;
+                fi
+            od
+
+            return true;
+        si
+
+        // Resolve a bare identifier to the type-like symbols (class, trait,
+        // struct, enum, union) whose leading identifier matches. Filters
+        // out variables, methods and other non-type kinds so the members
+        // fallback only tries describe_type on plausibly resolvable names.
+        resolve_type_name(session: ANALYSER_SESSION, name: string) -> LIST[SYMBOL_MATCH] static is
+            let all_matches = resolve_name(session, name);
+            let type_matches = LIST[SYMBOL_MATCH]();
+
+            for match in all_matches do
+                if is_type_kind(match.symbol.kind) then
+                    type_matches.add(match);
+                fi
+            od
+
+            return type_matches;
+        si
+
+        // LSP-style SymbolKind values that describe_type can resolve:
+        // 5 CLASS, 10 ENUM, 11 INTERFACE (trait / union), 23 STRUCT. Keep
+        // this list narrow so the fallback only re-queries names it has
+        // a reasonable chance of resolving.
+        is_type_kind(kind: int) -> bool static =>
+            kind == 5 \/ kind == 10 \/ kind == 11 \/ kind == 23;
+
+        // Build the fully-qualified name of a matched type symbol:
+        // `<qualifier>.<leading identifier>`. Returns the leading
+        // identifier alone when the symbol has no qualifier (top-level).
+        qualified_name_of(match: SYMBOL_MATCH) -> string static is
+            let leading = extract_leading_identifier(match.symbol.search_description);
+
+            if match.symbol.qualifier.length > 0 then
+                return "{match.symbol.qualifier}.{leading}";
+            fi
+
+            return leading;
+        si
+
+        // Ambiguous name: multiple types share the leading identifier
+        // (e.g. `Foo` in two namespaces). Render the candidate list so the
+        // caller can re-invoke `members` with the exact qualified name.
+        render_type_candidates(name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
+            let result = StringBuilder();
+
+            result.append("{matches.count} types share the name {name}. Re-invoke `members` with one of:\n");
+
+            for match in matches do
+                result.append("  {qualified_name_of(match)} - {match.file}:{match.symbol.start_line}\n");
+            od
+
+            return result.to_string();
+        si
 
         read_position(arguments: JsonElement) -> POSITION static is
             let file = WIRE.try_get_string(arguments, "file");
