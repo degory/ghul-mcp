@@ -65,8 +65,13 @@ jobs:
     - name: Run smoke test
       run: ./tests/smoke.sh
 
+    # Pack in Debug: the ghul compiler currently emits IL that JITs to
+    # InvalidProgramException under Release-config optimisations for some
+    # of ghul-mcp's methods. Debug binaries pass smoke and function
+    # correctly at runtime; a Release build ships broken. Track the
+    # underlying codegen bug separately.
     - name: Pack the tool
-      run: dotnet pack -nologo -p:Version=${{ needs.version.outputs.package }}
+      run: dotnet pack -nologo -c Debug -p:Version=${{ needs.version.outputs.package }}
 
     - uses: actions/upload-artifact@v7
       with:
