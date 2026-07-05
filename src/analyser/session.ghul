@@ -361,58 +361,17 @@ namespace Analyser is
             throw unexpected("symbols", response);
         si
 
-        // Probe the members of a type by asking the analyser what would
-        // complete after `x.` in a synthesized scratch file. Handles both
-        // ghūl-declared and imported types, since completion uses the same
-        // symbol table `hover` and `references` do. The scratch file is
-        // written into the analyser via edit, queried, and then cleared to
-        // an empty file so it stays out of subsequent full compiles.
-        probe_members(type_expression: string) -> Response.COMPLETION is
-            let path = ".ghul-mcp-scratch.ghul";
+        // Resolve a type expression by qualified name and return its kind,
+        // ancestors and members. Compiler 19.11.0+ answers this natively;
+        // the old scratch-file + completion trick is gone.
+        describe_type(type_expression: string) -> Response.DESCRIBE_TYPE is
+            let response = query(Request.DESCRIBE_TYPE(type_expression));
 
-            let source =
-                "namespace GhulMcpScratch is\n"
-                "    probe(x: {type_expression}) is\n"
-                "        x.\n"
-                "    si\n"
-                "si\n";
-
-            ensure_fresh();
-
-            // The completion is at the character position just after `x.` -
-            // 8 leading spaces + `x` + `.` = column 11 on line 3.
-            let line = 3;
-            let column = 11;
-
-            let probe_edits = LIST[EDIT_FILE]();
-
-            probe_edits.add(EDIT_FILE(path, source));
-            write_request(Request.EDIT(probe_edits));
-            read_response();
-
-            write_request(Request.COMPLETE(path, line, column));
-
-            let response mut = read_response();
-
-            if isa Response.DIAGNOSTICS(response) then
-                response = read_response();
+            if let describe_type_response: Response.DESCRIBE_TYPE = response then
+                return describe_type_response;
             fi
 
-            // Clear the scratch file's semantic contribution but leave it
-            // parseable - an empty file trips the top-level parser, and any
-            // subsequent full compile would report a spurious error on the
-            // now-empty scratch. A namespace with no members parses clean.
-            let clear_edits = LIST[EDIT_FILE]();
-
-            clear_edits.add(EDIT_FILE(path, "namespace GhulMcpScratch is si\n"));
-            write_request(Request.EDIT(clear_edits));
-            read_response();
-
-            if let completion: Response.COMPLETION = response then
-                return completion;
-            fi
-
-            throw unexpected("completion", response);
+            throw unexpected("describe_type", response);
         si
 
         unexpected(wanted: string, response: Response) -> Exception =>
