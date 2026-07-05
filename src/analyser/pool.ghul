@@ -1,0 +1,135 @@
+namespace Analyser is
+    use System.Exception;
+
+    use Collections.LIST;
+    use Collections.MAP;
+
+    use IO.Path;
+
+    // Multi-project analyser lifecycle: keeps a MAP<absolute project path,
+    // ANALYSER_SESSION>, spawns sessions lazily on first use, and evicts the
+    // least-recently-used entry when the pool exceeds its size cap.
+    //
+    // Path canonicalisation (`Path.get_full_path`) means different spellings
+    // of the same directory - relative paths, trailing slashes, or the
+    // caller's cwd chosen by the process - share one session.
+    //
+    // A default project set at startup handles the common case (a client
+    // configured for one project) without every tool call needing to pass
+    // `project`. Callers working across multiple projects (e.g. multiple
+    // git worktrees under one Claude Code session) supply `project` per
+    // call and rely on the pool to keep each analyser warm between calls.
+    class ANALYSER_POOL: Disposable is
+        _default_project: string?;
+        _sessions: MAP[string, ANALYSER_SESSION];
+        _max_sessions: int;
+        _next_order: long;
+
+        init(default_project: string?, max_sessions: int) is
+            if default_project? /\ default_project.length > 0 then
+                _default_project = Path.get_full_path(default_project);
+            fi
+
+            _sessions = MAP[string, ANALYSER_SESSION]();
+            _max_sessions = max_sessions;
+            _next_order = 0L;
+        si
+
+        default_project: string? => _default_project;
+
+        // Get or spawn a session for `project`, or the default. Throws when
+        // no project is specified and no default was configured at startup.
+        get_session(project: string?) -> ANALYSER_SESSION is
+            let path = resolve(project);
+
+            if _sessions.contains_key(path) then
+                let session = _sessions[path];
+                _next_order = _next_order + 1L;
+                session.last_used_order = _next_order;
+
+                return session;
+            fi
+
+            if _sessions.count >= _max_sessions then
+                evict_least_recently_used();
+            fi
+
+            let session = ANALYSER_SESSION(path);
+            _next_order = _next_order + 1L;
+            session.last_used_order = _next_order;
+
+            _sessions[path] = session;
+
+            return session;
+        si
+
+        resolve(project: string?) -> string is
+            if project? /\ project.length > 0 then
+                return Path.get_full_path(project);
+            fi
+
+            if let d: string = _default_project then
+                return d;
+            fi
+
+            throw Exception("no project specified and no default project configured");
+        si
+
+        // List the currently-warm sessions' project directories.
+        warm_sessions() -> LIST[string] is
+            let result = LIST[string]();
+
+            for pair in _sessions do
+                result.add(pair.value.project_directory);
+            od
+
+            return result;
+        si
+
+        // Explicit eviction, so a caller can free a session that's known to
+        // be idle (e.g. a worktree has been removed).
+        release(project: string) -> bool is
+            let path = Path.get_full_path(project);
+
+            if !_sessions.contains_key(path) then
+                return false;
+            fi
+
+            let session = _sessions[path];
+
+            _sessions.remove(path);
+
+            try
+                session.dispose();
+            catch ex: Exception
+            yrt
+
+            return true;
+        si
+
+        evict_least_recently_used() is
+            let oldest: ANALYSER_SESSION? mut = null;
+
+            for pair in _sessions do
+                if !oldest? \/ pair.value.last_used_order < oldest.last_used_order then
+                    oldest = pair.value;
+                fi
+            od
+
+            if oldest? then
+                release(oldest.project_directory);
+            fi
+        si
+
+        dispose() is
+            for pair in _sessions do
+                try
+                    pair.value.dispose();
+                catch ex: Exception
+                yrt
+            od
+
+            _sessions.clear();
+        si
+    si
+si

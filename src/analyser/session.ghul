@@ -39,6 +39,11 @@ namespace Analyser is
         _mtimes: MAP[string, System.DateTime];
         _stderr_capture: StringBuilder;
 
+        // Monotonic use-order counter, updated by the pool on every
+        // get_session so it can evict the least-recently-used entry when
+        // it reaches its size cap.
+        last_used_order: long public;
+
         init(project_directory: string) is
             _project_directory = Path.get_full_path(project_directory);
             _options = JsonSerializerOptions();
@@ -49,6 +54,7 @@ namespace Analyser is
 
             _mtimes = MAP[string, System.DateTime]();
             _stderr_capture = StringBuilder();
+            last_used_order = 0L;
         si
 
         project_directory: string => _project_directory;
@@ -327,12 +333,13 @@ namespace Analyser is
                 response = read_response();
             fi
 
-            // Clear the scratch file so it doesn't contribute to future
-            // compiles. It never existed on disk, so ensure_fresh won't
-            // re-touch it.
+            // Clear the scratch file's semantic contribution but leave it
+            // parseable - an empty file trips the top-level parser, and any
+            // subsequent full compile would report a spurious error on the
+            // now-empty scratch. A namespace with no members parses clean.
             let clear_edits = LIST[EDIT_FILE]();
 
-            clear_edits.add(EDIT_FILE(path, ""));
+            clear_edits.add(EDIT_FILE(path, "namespace GhulMcpScratch is si\n"));
             write_request(Request.EDIT(clear_edits));
             read_response();
 

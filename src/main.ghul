@@ -1,20 +1,29 @@
 use IO.Std;
 
-server_version: string => "0.2.0";
+server_version: string => "0.3.0";
+
+// Cap on the pool of concurrently-warm analyser sessions. Each analyser is
+// a `dotnet ghul-compiler --analyse` subprocess, and each holds an
+// in-memory copy of every source file it's been given. Above the cap the
+// pool evicts the least recently used.
+max_sessions: int => 8;
 
 entry(arguments: string[]) is
     Std.input_encoding = System.Text.UTF8Encoding(false);
     Std.output_encoding = System.Text.UTF8Encoding(false);
 
-    let project_directory mut = ".";
+    let default_project: string? mut = null;
+
     let index mut = 0;
 
     while index < arguments.count do
-        if arguments[index] =~ "--project" /\ index + 1 < arguments.count then
-            project_directory = arguments[index + 1];
+        let arg = arguments[index];
+
+        if (arg =~ "--project" \/ arg =~ "--default-project") /\ index + 1 < arguments.count then
+            default_project = arguments[index + 1];
             index = index + 2;
         else
-            Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arguments[index]}");
+            Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arg}");
             index = index + 1;
         fi
     od
@@ -28,7 +37,7 @@ entry(arguments: string[]) is
         );
 
     let server = MCP.SERVER(reader, Std.out, "ghul-mcp", server_version);
-    let session = Analyser.ANALYSER_SESSION(project_directory);
+    let pool = Analyser.ANALYSER_POOL(default_project, max_sessions);
 
     server.add_tool(
         MCP.TOOL(
@@ -39,11 +48,11 @@ entry(arguments: string[]) is
         )
     );
 
-    Analyser.ANALYSER_TOOLS.register(server, session);
+    Analyser.ANALYSER_TOOLS.register(server, pool);
 
     try
         server.run();
     finally
-        session.dispose();
+        pool.dispose();
     yrt
 si
