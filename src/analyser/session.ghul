@@ -383,11 +383,96 @@ namespace Analyser is
 
             let first = read_response();
 
-            if !isa Response.LISTEN(first) then
+            if let listen: Response.LISTEN = first then
+                _reject_if_compiler_too_old(listen.compiler_version);
+            else
                 throw Exception("expected listen as the analyser's first response - is the ghul.compiler tool restored in {_project_directory}?\nstderr so far:\n{_stderr_capture}");
             fi
 
             _mtimes.clear();
+        si
+
+        // Minimum ghul.compiler version ghul-mcp requires. Raise whenever
+        // ghul-mcp adopts a new protocol feature - the diagnostic the
+        // client raises here is a lot clearer than the wire-level hang
+        // that a version mismatch otherwise causes.
+        //
+        // Held at 19.13.0 because that's the first version that emits
+        // compiler_version on the LISTEN frame (ghul#1634): anything
+        // older can't be checked, so we treat the absence of the field
+        // as "too old to negotiate" and refuse to talk.
+        MIN_COMPILER_VERSION: string static => "19.13.0";
+
+        _reject_if_compiler_too_old(reported: string?) is
+            if !reported? \/ reported.length == 0 then
+                throw Exception(
+                    "analyser at {_project_directory} did not advertise a compiler version on its LISTEN frame. "
+                    "That means it is older than 19.13.0 - and ghul-mcp needs at least {MIN_COMPILER_VERSION}. "
+                    "Bump the pin in {_project_directory}/.config/dotnet-tools.json with "
+                    "`dotnet tool update --local ghul.compiler`."
+                );
+            fi
+
+            if compare_versions(reported, MIN_COMPILER_VERSION) < 0 then
+                throw Exception(
+                    "analyser at {_project_directory} is ghul.compiler {reported}, "
+                    "but ghul-mcp requires at least {MIN_COMPILER_VERSION}. "
+                    "Bump the pin in {_project_directory}/.config/dotnet-tools.json with "
+                    "`dotnet tool update --local ghul.compiler`."
+                );
+            fi
+        si
+
+        // Semver-ish comparison: split on `.` and `-`, compare the leading
+        // major.minor.patch triple numerically, ignore any prerelease
+        // suffix. Returns negative if `left` < `right`, zero if equal,
+        // positive if greater. Good enough for a min-version check where
+        // we don't need to distinguish `19.13.0-alpha.1` from `19.13.0`.
+        compare_versions(left: string, right: string) -> int static is
+            let left_parts = _extract_numeric_triple(left);
+            let right_parts = _extract_numeric_triple(right);
+
+            for i in 0..3 do
+                if left_parts[i] != right_parts[i] then
+                    return left_parts[i] - right_parts[i];
+                fi
+            od
+
+            return 0;
+        si
+
+        _extract_numeric_triple(version: string) -> LIST[int] static is
+            let result = LIST([0, 0, 0]);
+
+            let index mut = 0;
+            let current mut = 0;
+            let has_digits mut = false;
+
+            for c in version do
+                if index >= 3 then
+                    break;
+                fi
+
+                if c >= '0' /\ c <= '9' then
+                    current = current * 10 + (cast int(c) - cast int('0'));
+                    has_digits = true;
+                elif c == '.' then
+                    if has_digits then
+                        result[index] = current;
+                        index = index + 1;
+                        current = 0;
+                        has_digits = false;
+                    fi
+                else
+                    break;
+                fi
+            od
+
+            if has_digits /\ index < 3 then
+                result[index] = current;
+            fi
+
+            return result;
         si
 
         // Ask MSBuild to write the project's reference-assembly list; the
@@ -666,9 +751,67 @@ namespace Analyser is
             process.standard_input.flush();
         si
 
-        // One JSON object per line; read characters to the newline and
-        // deserialize.
+        // Cap on any single response read. A well-behaved analyser answers
+        // in milliseconds; even a heavy compile-and-report is well under 60s
+        // in practice. Anything longer is either a stuck analyser or a
+        // request the analyser doesn't recognise and has silently dropped
+        // (older compilers pre-#1634 do this). Turning that into a clean
+        // failure - dispose the process, surface the timeout - keeps the
+        // pool healthy so subsequent calls don't inherit the wedged state.
+        READ_TIMEOUT_MS: int static => 60000;
+
+        // Read one line from the analyser's stdout and deserialize it into
+        // a Response. Wrapped in a bounded wait so a wedged analyser
+        // surfaces as a diagnosable timeout rather than a permanent hang.
         read_response() -> Response is
+            // Ghul.BOX[T] holders so the read task hands the outcome back
+            // across the closure boundary. `let mut` capture does work
+            // when the closure both reads and writes the local, but the
+            // boxing analysis (mark_boxed_locals) only marks a local
+            // captured on read - a write-only capture is left unboxed and
+            // the outer scope sees the pre-lambda value. Using an
+            // explicit BOX sidesteps the gap.
+            let response_box = Ghul.BOX[Response?]();
+            let error_box = Ghul.BOX[Exception?]();
+
+            let task = Tasks.TASK.run(
+                () is
+                    try
+                        response_box.value = _read_response_unbounded();
+                    catch ex: Exception
+                        error_box.value = ex;
+                    yrt
+                si
+            );
+
+            if !task.wait(READ_TIMEOUT_MS) then
+                dispose_process();
+
+                throw Exception(
+                    "analyser at {_project_directory} did not respond within {READ_TIMEOUT_MS}ms. "
+                    "The compiler version pinned by that project may be older than the request "
+                    "expects, or the analyser is genuinely stuck. Process disposed; the next "
+                    "request will spawn a fresh one.\nstderr so far:\n{_stderr_capture}"
+                );
+            fi
+
+            if let e: Exception = error_box.value then
+                throw e;
+            fi
+
+            if !response_box.value? then
+                throw Exception(
+                    "read_response task completed without a response and without an exception "
+                    "against {_project_directory} - internal invariant violation"
+                );
+            fi
+
+            return response_box.value!;
+        si
+
+        // One JSON object per line; read characters to the newline and
+        // deserialize. Called under the wait budget in read_response.
+        _read_response_unbounded() -> Response is
             let process = _process;
 
             if !process? then

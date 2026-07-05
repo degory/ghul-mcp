@@ -36,7 +36,7 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.3.0"' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.5.0"' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
