@@ -764,22 +764,15 @@ namespace Analyser is
         // a Response. Wrapped in a bounded wait so a wedged analyser
         // surfaces as a diagnosable timeout rather than a permanent hang.
         read_response() -> Response is
-            // Ghul.BOX[T] holders so the read task hands the outcome back
-            // across the closure boundary. `let mut` capture does work
-            // when the closure both reads and writes the local, but the
-            // boxing analysis (mark_boxed_locals) only marks a local
-            // captured on read - a write-only capture is left unboxed and
-            // the outer scope sees the pre-lambda value. Using an
-            // explicit BOX sidesteps the gap.
-            let response_box = Ghul.BOX[Response?]();
-            let error_box = Ghul.BOX[Exception?]();
+            let response: Response? mut = null;
+            let error: Exception? mut = null;
 
             let task = Tasks.TASK.run(
                 () is
                     try
-                        response_box.value = _read_response_unbounded();
+                        response = _read_response_unbounded();
                     catch ex: Exception
-                        error_box.value = ex;
+                        error = ex;
                     yrt
                 si
             );
@@ -795,18 +788,18 @@ namespace Analyser is
                 );
             fi
 
-            if let e: Exception = error_box.value then
+            if let e: Exception = error then
                 throw e;
             fi
 
-            if !response_box.value? then
+            if !response? then
                 throw Exception(
                     "read_response task completed without a response and without an exception "
                     "against {_project_directory} - internal invariant violation"
                 );
             fi
 
-            return response_box.value!;
+            return response!;
         si
 
         // One JSON object per line; read characters to the newline and
