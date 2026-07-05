@@ -28,6 +28,12 @@ namespace Analyser is
         init(default_project: string?, max_sessions: int) is
             if default_project? /\ default_project.length > 0 then
                 _default_project = Path.get_full_path(default_project);
+            else
+                // Both Claude Code and VS Code Copilot spawn MCP servers
+                // with cwd set to the project root; falling back to it
+                // means the standard registration config for either tool
+                // doesn't need to know a project path at all.
+                _default_project = Path.get_full_path(".");
             fi
 
             _sessions = MAP[string, ANALYSER_SESSION]();
