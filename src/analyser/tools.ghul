@@ -176,17 +176,35 @@ namespace Analyser is
             server.add_tool(
                 TOOL(
                     "sessions",
-                    "list the analyser sessions currently warm in the pool - one per project directory",
+                    "list the analyser sessions currently warm in the pool - project directory, OS pid, and known source count for each",
                     "{{\"type\": \"object\", \"properties\": {{}}}}",
                     arguments => run_sessions(pool)
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "release_session",
+                    "dispose the analyser session for `project` if the pool has one. Use to free memory or to force a fresh spawn when a session gets into a bad state. Absent project releases the default project's session.",
+                    "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",
+                    arguments => run_release_session(pool, arguments)
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "heap_check",
+                    "ask the analyser for `project` to sample its managed heap. If the heap has grown past the recycle threshold, the analyser writes restart and exits; ghul-mcp drops the session and the next request spawns a fresh one.",
+                    "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",
+                    arguments => run_heap_check(pool, arguments)
                 )
             );
         si
 
         run_sessions(pool: ANALYSER_POOL) -> string static is
-            let warm = pool.warm_sessions();
+            let sessions = pool.snapshot_sessions();
 
-            if warm.count == 0 then
+            if sessions.count == 0 then
                 let default_project = pool.default_project;
 
                 if default_project? then
@@ -198,8 +216,16 @@ namespace Analyser is
 
             let result = StringBuilder();
 
-            for path in warm do
-                result.append("{path}\n");
+            for session in sessions do
+                let pid = session.process_id;
+                let pid_text =
+                    if pid? then
+                        "pid {pid}"
+                    else
+                        "not running"
+                    fi;
+
+                result.append("{session.project_directory} ({pid_text}, {session.known_source_count} sources)\n");
             od
 
             if let default_project: string = pool.default_project then
@@ -207,6 +233,50 @@ namespace Analyser is
             fi
 
             return result.to_string();
+        si
+
+        run_release_session(pool: ANALYSER_POOL, arguments: JsonElement) -> string static is
+            let project = WIRE.try_get_string(arguments, "project");
+            let target =
+                if project? /\ project.length > 0 then
+                    project
+                else
+                    pool.default_project ?? ""
+                fi;
+
+            if target.length == 0 then
+                return "no project specified and no default project configured";
+            fi
+
+            if pool.release(target) then
+                return "released session for {target}";
+            fi
+
+            return "no warm session for {target}";
+        si
+
+        run_heap_check(pool: ANALYSER_POOL, arguments: JsonElement) -> string static is
+            let project = WIRE.try_get_string(arguments, "project");
+            let session = pool.get_session(project);
+
+            let was_running = session.is_running;
+
+            if !was_running then
+                return "no analyser running for {session.project_directory} - nothing to check";
+            fi
+
+            let healthy = session.send_heap_check();
+
+            if healthy then
+                return "heap check ok for {session.project_directory}";
+            fi
+
+            // Watchdog wrote restart and exited; ensure the pool releases
+            // so a subsequent request spawns fresh rather than reusing the
+            // now-dead handle.
+            pool.release(session.project_directory);
+
+            return "analyser for {session.project_directory} was recycled - a fresh process will spawn on next request";
         si
 
         run_diagnostics(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is

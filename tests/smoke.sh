@@ -209,6 +209,27 @@ send "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"nam
 await 32
 response 32 | grep -q '"text":"no errors or warnings"' || fail "hints: hints must clear when hints_for is dropped"
 
+# --- part 5: pool operations --------------------------------------------
+# Verify the pool exposes per-session detail, that heap_check returns
+# ok on a fresh session, and that release_session tears one down.
+
+send '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
+await 40
+response 40 | grep -q "pid " || fail "sessions: expected a pid in the listing"
+response 40 | grep -q "sources" || fail "sessions: expected a source count in the listing"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"heap_check\",\"arguments\":{\"project\":\"$tmp\"}}}"
+await 41
+response 41 | grep -q "heap check ok" || fail "heap_check: expected ok on a fresh session"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"release_session\",\"arguments\":{\"project\":\"$tmp\"}}}"
+await 42
+response 42 | grep -q "released session for" || fail "release_session: expected release confirmation"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"release_session\",\"arguments\":{\"project\":\"$tmp\"}}}"
+await 43
+response 43 | grep -q "no warm session" || fail "release_session: expected miss after release"
+
 exec 3>&-
 wait "$server_pid" 2>/dev/null || true
 server_pid=""

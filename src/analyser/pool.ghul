@@ -86,6 +86,19 @@ namespace Analyser is
             return result;
         si
 
+        // Enumerate the warm sessions themselves - lets a tool render
+        // per-session details (pid, source count) without exposing the
+        // underlying map to the caller.
+        snapshot_sessions() -> LIST[ANALYSER_SESSION] is
+            let result = LIST[ANALYSER_SESSION]();
+
+            for pair in _sessions do
+                result.add(pair.value);
+            od
+
+            return result;
+        si
+
         // Explicit eviction, so a caller can free a session that's known to
         // be idle (e.g. a worktree has been removed).
         release(project: string) -> bool is
