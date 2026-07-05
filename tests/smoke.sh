@@ -168,6 +168,47 @@ send "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"nam
 await 24
 response 24 | grep -q 'main.ghul' || fail "2nd diagnostics: expected broken main.ghul"
 
+# --- part 4: hints_for gating -------------------------------------------
+# Verify diagnostics only emits editor-only hints (severity 4) when a file
+# is opted in via `hints_for`, and that toggling the set on/off across
+# calls busts the analyser's compile cache so hints actually re-emit.
+
+hints_dir=$(mktemp -d)
+trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
+
+cat > "$hints_dir/test.ghul" <<'EOF'
+class WIDGET is
+    init() is si
+    make() -> WIDGET? => WIDGET();
+    run() is
+        let w mut = make();
+        if w? then
+            w = make();
+        fi
+    si
+si
+
+entry() is
+    WIDGET().run();
+si
+EOF
+cp ghul-mcp.ghulproj "$hints_dir/hints-test.ghulproj"
+cp -r .config "$hints_dir/"
+(cd "$hints_dir" && dotnet tool restore >/dev/null)
+
+send "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\"}}}"
+await 30
+response 30 | grep -q '"text":"no errors or warnings"' || fail "hints: baseline diagnostics should be clean"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\",\"hints_for\":[\"test.ghul\"]}}}"
+await 31
+response 31 | grep -q 'hint:' || fail "hints: hints_for should surface a narrowing-kill hint"
+response 31 | grep -q 'reassigned' || fail "hints: expected the narrowing-killed reassignment hint"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\"}}}"
+await 32
+response 32 | grep -q '"text":"no errors or warnings"' || fail "hints: hints must clear when hints_for is dropped"
+
 exec 3>&-
 wait "$server_pid" 2>/dev/null || true
 server_pid=""

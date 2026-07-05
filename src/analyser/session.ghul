@@ -38,6 +38,7 @@ namespace Analyser is
         _response_file: string?;
         _mtimes: MAP[string, System.DateTime];
         _stderr_capture: StringBuilder;
+        _last_hints_for: LIST[string];
 
         // Monotonic use-order counter, updated by the pool on every
         // get_session so it can evict the least-recently-used entry when
@@ -54,7 +55,22 @@ namespace Analyser is
 
             _mtimes = MAP[string, System.DateTime]();
             _stderr_capture = StringBuilder();
+            _last_hints_for = LIST[string]();
             last_used_order = 0L;
+        si
+
+        open_paths_equal(a: LIST[string], b: LIST[string]) -> bool static is
+            if a.count != b.count then
+                return false;
+            fi
+
+            for i in 0..(a.count - 1) do
+                if a[i] !~ b[i] then
+                    return false;
+                fi
+            od
+
+            return true;
         si
 
         project_directory: string => _project_directory;
@@ -203,15 +219,20 @@ namespace Analyser is
             fi
         si
 
-        // Send every new or on-disk-changed source and swallow the
-        // diagnostics response the edit provokes. Spawns the analyser if it
-        // isn't running.
-        ensure_fresh() is
+        // Ensure the analyser subprocess is up, spawning a fresh one if not.
+        // Split from source syncing so callers that need to send other
+        // fire-and-forget setup (SET_OPEN_FILES etc.) before any EDIT can
+        // interleave in the correct order.
+        ensure_spawned() is
             if !is_running then
                 dispose_process();
                 start();
             fi
+        si
 
+        // Send every new or on-disk-changed source and swallow the
+        // diagnostics response the edit provokes.
+        sync_sources() is
             let changed = LIST[EDIT_FILE]();
 
             for path in find_sources() do
@@ -230,10 +251,54 @@ namespace Analyser is
             fi
         si
 
+        // Convenience: spawn + source-sync in one call. Used by every
+        // query path that doesn't need to interleave SET_OPEN_FILES between
+        // the two.
+        ensure_fresh() is
+            ensure_spawned();
+            sync_sources();
+        si
+
         // Full-project diagnostics: freshen, compile, return the compile's
-        // diagnostics response.
-        compile_diagnostics() -> Response.DIAGNOSTICS is
-            ensure_fresh();
+        // diagnostics response. hints_for is the analyser's editor-open
+        // set; hint-level diagnostics (narrowing / narrowing-kill etc.)
+        // are gated on it. Always full-set-replace so state doesn't leak
+        // across queries - `compile_diagnostics(no args)` reliably
+        // suppresses hints even if a previous call opted in.
+        compile_diagnostics() -> Response.DIAGNOSTICS =>
+            compile_diagnostics(Collections.LIST[string]());
+
+        compile_diagnostics(hints_for: Collections.Iterable[string]) -> Response.DIAGNOSTICS is
+            ensure_spawned();
+
+            let open_paths = LIST[string]();
+
+            for p in hints_for do
+                if p? /\ p.length > 0 then
+                    open_paths.add(p);
+                fi
+            od
+
+            // Set open files before any edit-driving compile, so hint
+            // gating is in effect for the whole compilation. The wire doc
+            // says as much: "sent before the diagnostics-producing
+            // requests".
+            write_request(Request.SET_OPEN_FILES(open_paths));
+
+            // If the open-files set differs from the previous compile,
+            // bust the mtime cache so sync_sources re-EDITs everything.
+            // SET_OPEN_FILES on its own doesn't invalidate the analyser's
+            // "full compile needed" flag, so a second compile with an
+            // unchanged tree just re-collects the previous run's stored
+            // diagnostics — hints for the newly-open file don't fire.
+            // Forcing an EDIT invalidates the flag; the compile that
+            // follows runs compile-expressions again.
+            if !open_paths_equal(open_paths, _last_hints_for) then
+                _mtimes.clear();
+                _last_hints_for = open_paths;
+            fi
+
+            sync_sources();
             write_request(Request.COMPILE());
 
             let response = read_response();
