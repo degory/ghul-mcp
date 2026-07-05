@@ -10,7 +10,14 @@ Written in ghūl, consuming the `ghul.analysis.protocol` client library.
 
 ## Status
 
-Working. Tools:
+Working. Multi-project routing: every semantic tool takes an optional
+`project` argument (absolute path to a ghūl project directory). Absent
+uses the server's `--default-project`. The server keeps a pool of analyser
+sessions (up to 8) keyed by canonical path and reaps least-recently-used
+entries above the cap, so multiple git worktrees under one Claude session
+can each stay warm.
+
+Tools:
 
 - Position-based: `diagnostics`, `hover`, `definition`, `references`,
   `implementations`.
@@ -33,13 +40,13 @@ Point the server at a ghūl project directory (its dotnet tools must be
 restored; the assemblies list is generated automatically on first use):
 
 ```sh
-dotnet ghul-mcp.dll --project path/to/project
+dotnet ghul-mcp.dll --default-project path/to/project
 ```
 
 Registering with Claude Code:
 
 ```sh
-claude mcp add ghul -- dotnet <path>/ghul-mcp.dll --project <project-dir>
+claude mcp add ghul -- dotnet <path>/ghul-mcp.dll --default-project <project-dir>
 ```
 
 ## Build and test

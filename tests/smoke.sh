@@ -36,7 +36,7 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.2.0"' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.3.0"' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
@@ -59,7 +59,7 @@ cp -r src ghul-mcp.ghulproj .config "$tmp/"
 cp "$tmp/src/main.ghul" "$tmp/main.pristine"
 
 mkfifo "$fifo"
-dotnet "$server" --project "$tmp" <"$fifo" >"$responses" &
+dotnet "$server" --default-project "$tmp" <"$fifo" >"$responses" &
 server_pid=$!
 exec 3>"$fifo"
 
@@ -130,6 +130,43 @@ send '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"members",
 await 11
 response 11 | grep -q 'append' || fail "members(StringBuilder): expected append in members"
 response 11 | grep -q 'length' || fail "members(StringBuilder): expected length property"
+
+# --- part 3: multi-project routing ----------------------------------------
+# Spawn a second scratch project alongside the first and verify a query with
+# an explicit `project` argument spawns a separate analyser session, while
+# no-arg queries continue to use the default.
+
+tmp2=$(mktemp -d)
+trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2"' EXIT
+
+cp -r src ghul-mcp.ghulproj .config "$tmp2/"
+(cd "$tmp2" && dotnet tool restore >/dev/null)
+
+send '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
+await 20
+response 20 | grep -q "$tmp" || fail "sessions: expected default project warm after diagnostics"
+response 20 | grep -q "$tmp2" && fail "sessions: second project should NOT be warm yet"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$tmp2\"}}}"
+await 21
+response 21 | grep -q '"text":"no errors or warnings"' || fail "diagnostics: expected clean second project"
+
+send '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
+await 22
+response 22 | grep -q "$tmp" || fail "sessions after 2nd project: default still warm"
+response 22 | grep -q "$tmp2" || fail "sessions after 2nd project: second project should now be warm"
+
+# Break a file in project 2 and verify only that project's diagnostics
+# report it — the pool must not have crossed sources between sessions.
+echo "this is not ghul" >> "$tmp2/src/main.ghul"
+
+send '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
+await 23
+response 23 | grep -q '"text":"no errors or warnings"' || fail "default diagnostics after 2nd broken: still clean"
+
+send "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$tmp2\"}}}"
+await 24
+response 24 | grep -q 'main.ghul' || fail "2nd diagnostics: expected broken main.ghul"
 
 exec 3>&-
 wait "$server_pid" 2>/dev/null || true

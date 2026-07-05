@@ -17,34 +17,63 @@ namespace Analyser is
     use MCP.TOOL;
     use MCP.WIRE;
 
-    // Registers the semantic-query tools onto the MCP server, each backed by
-    // the shared analyser session. All lines and columns are 1-based, both
-    // ways, matching compiler diagnostics.
+    // Registers the semantic-query tools onto the MCP server, routing each
+    // call through the pool: the `project` argument (absolute path to a
+    // ghūl project directory) selects which analyser answers, defaulting to
+    // whatever the pool was configured with at startup. All lines and
+    // columns are 1-based, both ways, matching compiler diagnostics.
+    //
+    // The multi-project routing matters because the workspace holds
+    // several repos and every session tends to have several git worktrees
+    // in flight; each is its own ghūl project. A single default-project
+    // server would silently answer every query against `main`.
     class ANALYSER_TOOLS is
+        PROJECT_PROPERTY: string static =>
+            "\"project\": {{\"type\": \"string\", \"description\": \"absolute path to the ghūl project directory (the one holding the .ghulproj). Optional - defaults to the server's --default-project.\"}}";
+
         POSITION_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "\"file\": {{\"type\": \"string\", \"description\": \"source path relative to the project directory\"}},"
             "\"line\": {{\"type\": \"integer\", \"description\": \"1-based line\"}},"
-            "\"column\": {{\"type\": \"integer\", \"description\": \"1-based column\"}}"
+            "\"column\": {{\"type\": \"integer\", \"description\": \"1-based column\"}},"
+            "{PROJECT_PROPERTY}"
             "}}, \"required\": [\"file\", \"line\", \"column\"]}}";
 
         NAME_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
-            "\"name\": {{\"type\": \"string\", \"description\": \"exact symbol name (case-insensitive); leading identifier of a declaration, e.g. `ANALYSER_SESSION`, `render_custom_attribute_line`\"}}"
+            "\"name\": {{\"type\": \"string\", \"description\": \"exact symbol name (case-insensitive); leading identifier of a declaration, e.g. `ANALYSER_SESSION`, `render_custom_attribute_line`\"}},"
+            "{PROJECT_PROPERTY}"
             "}}, \"required\": [\"name\"]}}";
 
         TYPE_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
-            "\"type\": {{\"type\": \"string\", \"description\": \"type expression as it would appear in ghūl source, e.g. `System.Text.StringBuilder`, `Semantic.Symbols.SIGNATURE_PART`, `Collections.LIST[string]`; fully-qualified for imported types\"}}"
+            "\"type\": {{\"type\": \"string\", \"description\": \"type expression as it would appear in ghūl source, e.g. `System.Text.StringBuilder`, `Semantic.Symbols.SIGNATURE_PART`, `Collections.LIST[string]`; fully-qualified for imported types\"}},"
+            "{PROJECT_PROPERTY}"
             "}}, \"required\": [\"type\"]}}";
 
-        register(server: SERVER, session: ANALYSER_SESSION) static is
+        PROJECT_ONLY_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "{PROJECT_PROPERTY}"
+            "}}}}";
+
+        QUERY_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "\"query\": {{\"type\": \"string\", \"description\": \"case-insensitive substring to filter symbol descriptions; empty or omitted returns all\"}},"
+            "{PROJECT_PROPERTY}"
+            "}}}}";
+
+        // Resolve the analyser session for this tool call. Every tool that
+        // touches the analyser goes through here.
+        session_from(pool: ANALYSER_POOL, arguments: JsonElement) -> ANALYSER_SESSION static =>
+            pool.get_session(WIRE.try_get_string(arguments, "project"));
+
+        register(server: SERVER, pool: ANALYSER_POOL) static is
             server.add_tool(
                 TOOL(
                     "diagnostics",
                     "compile the ghūl project and report all errors and warnings",
-                    "{{\"type\": \"object\", \"properties\": {{}}}}",
-                    arguments => run_diagnostics(session)
+                    PROJECT_ONLY_SCHEMA,
+                    arguments => run_diagnostics(session_from(pool, arguments))
                 )
             );
 
@@ -53,7 +82,7 @@ namespace Analyser is
                     "hover",
                     "signature and kind of the symbol at a position, as the IDE hover would show it",
                     POSITION_SCHEMA,
-                    arguments => run_hover(session, arguments)
+                    arguments => run_hover(session_from(pool, arguments), arguments)
                 )
             );
 
@@ -62,7 +91,7 @@ namespace Analyser is
                     "definition",
                     "location where the symbol at a position is defined",
                     POSITION_SCHEMA,
-                    arguments => run_position_locations(session, arguments, "definition")
+                    arguments => run_position_locations(session_from(pool, arguments), arguments, "definition")
                 )
             );
 
@@ -71,7 +100,7 @@ namespace Analyser is
                     "references",
                     "all locations that reference the symbol at a position",
                     POSITION_SCHEMA,
-                    arguments => run_position_locations(session, arguments, "references")
+                    arguments => run_position_locations(session_from(pool, arguments), arguments, "references")
                 )
             );
 
@@ -80,7 +109,7 @@ namespace Analyser is
                     "implementations",
                     "locations implementing the trait member or overriding the method at a position",
                     POSITION_SCHEMA,
-                    arguments => run_position_locations(session, arguments, "implementations")
+                    arguments => run_position_locations(session_from(pool, arguments), arguments, "implementations")
                 )
             );
 
@@ -88,10 +117,8 @@ namespace Analyser is
                 TOOL(
                     "symbols",
                     "search symbol declarations across the project by substring; empty query lists every symbol",
-                    "{{\"type\": \"object\", \"properties\": {{"
-                    "\"query\": {{\"type\": \"string\", \"description\": \"case-insensitive substring to filter symbol descriptions; empty or omitted returns all\"}}"
-                    "}}}}",
-                    arguments => run_symbols(session, arguments)
+                    QUERY_SCHEMA,
+                    arguments => run_symbols(session_from(pool, arguments), arguments)
                 )
             );
 
@@ -100,7 +127,7 @@ namespace Analyser is
                     "hover_of",
                     "signature and kind of a symbol looked up by name (case-insensitive); returns the candidate list when multiple symbols share the name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session, arguments, "hover")
+                    arguments => run_by_name(session_from(pool, arguments), arguments, "hover")
                 )
             );
 
@@ -109,7 +136,7 @@ namespace Analyser is
                     "definition_of",
                     "declaration location of a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session, arguments, "definition")
+                    arguments => run_by_name(session_from(pool, arguments), arguments, "definition")
                 )
             );
 
@@ -118,7 +145,7 @@ namespace Analyser is
                     "references_of",
                     "all references to a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session, arguments, "references")
+                    arguments => run_by_name(session_from(pool, arguments), arguments, "references")
                 )
             );
 
@@ -127,7 +154,7 @@ namespace Analyser is
                     "implementations_of",
                     "trait implementations or method overrides for a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session, arguments, "implementations")
+                    arguments => run_by_name(session_from(pool, arguments), arguments, "implementations")
                 )
             );
 
@@ -136,9 +163,44 @@ namespace Analyser is
                     "members",
                     "list the members of a type: fields, properties, methods, plus inherited members and (for a union) its variants. Works for ghūl-declared and imported types; pass the type as it would appear in ghūl source",
                     TYPE_SCHEMA,
-                    arguments => run_members(session, arguments)
+                    arguments => run_members(session_from(pool, arguments), arguments)
                 )
             );
+
+            server.add_tool(
+                TOOL(
+                    "sessions",
+                    "list the analyser sessions currently warm in the pool - one per project directory",
+                    "{{\"type\": \"object\", \"properties\": {{}}}}",
+                    arguments => run_sessions(pool)
+                )
+            );
+        si
+
+        run_sessions(pool: ANALYSER_POOL) -> string static is
+            let warm = pool.warm_sessions();
+
+            if warm.count == 0 then
+                let default_project = pool.default_project;
+
+                if default_project? then
+                    return "no sessions warm yet - default project: {default_project}";
+                fi
+
+                return "no sessions warm yet - no default project configured";
+            fi
+
+            let result = StringBuilder();
+
+            for path in warm do
+                result.append("{path}\n");
+            od
+
+            if let default_project: string = pool.default_project then
+                result.append("(default project: {default_project})\n");
+            fi
+
+            return result.to_string();
         si
 
         run_diagnostics(session: ANALYSER_SESSION) -> string static is
