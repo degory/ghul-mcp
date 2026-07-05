@@ -3,9 +3,37 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <GhulCompiler>dotnet ghul-compiler</GhulCompiler>
+
+    <!-- Publishable as a local .NET tool. Consumers add it to their own
+         project's .config/dotnet-tools.json and run `dotnet ghul-mcp`; the
+         registration path used by Claude Code becomes `dotnet ghul-mcp
+         with the default-project argument` instead of pointing at a
+         specific dll. -->
+    <PackageId>ghul.mcp</PackageId>
+    <IsTool>true</IsTool>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>ghul-mcp</ToolCommandName>
+
+    <Title>ghūl MCP server</Title>
+    <Authors>degory</Authors>
+    <Description>MCP (Model Context Protocol) server for the ghūl programming language: drives the ghūl compiler's analysis mode to answer semantic queries so AI coding agents can query ghūl code by meaning instead of searching it as text.</Description>
+    <PackageDescription>MCP (Model Context Protocol) server for the ghūl programming language: drives the ghūl compiler's analysis mode to answer semantic queries so AI coding agents can query ghūl code by meaning instead of searching it as text.</PackageDescription>
+    <PackageTags>ghul;ghūl;mcp;model-context-protocol;llm;ai;coding-agent</PackageTags>
+    <PackageOutputPath>./nupkg</PackageOutputPath>
+    <PackageProjectUrl>https://ghul.dev</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/degory/ghul-mcp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryBranch>main</RepositoryBranch>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="LICENSE*" Pack="true" PackagePath="\" />
+
     <GhulSources Include="src/**/*.ghul" />
 
     <PackageReference Include="ghul.runtime" Version="5.3.0" />
