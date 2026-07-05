@@ -40,10 +40,22 @@ namespace Analyser is
         _stderr_capture: StringBuilder;
         _last_hints_for: LIST[string];
 
+        // Bumped on every request; used to trigger periodic heap-check
+        // pings that let the analyser's watchdog recycle the process
+        // before it grows too large.
+        _query_count: long;
+
         // Monotonic use-order counter, updated by the pool on every
         // get_session so it can evict the least-recently-used entry when
         // it reaches its size cap.
         last_used_order: long public;
+
+        // How often (in requests) to send an unsolicited heap_check ping.
+        // The compiler's own watchdog also samples the heap after every
+        // Nth compile as a fallback, so this doesn't have to be tight -
+        // it's belt-and-braces so a long-lived session that mostly serves
+        // hovers doesn't grow unbounded between the fallback samples.
+        HEAP_CHECK_EVERY: int static => 20;
 
         init(project_directory: string) is
             _project_directory = Path.get_full_path(project_directory);
@@ -56,8 +68,25 @@ namespace Analyser is
             _mtimes = MAP[string, System.DateTime]();
             _stderr_capture = StringBuilder();
             _last_hints_for = LIST[string]();
+            _query_count = 0L;
             last_used_order = 0L;
         si
+
+        // OS process id of the running analyser, or null if it hasn't
+        // been spawned (or has exited). Handy for the sessions tool.
+        process_id: int? is
+            let p = _process;
+
+            if !p? \/ p.has_exited then
+                return null;
+            fi
+
+            return p.id;
+        si
+
+        // The number of source files known to this session (empty on a
+        // fresh session, populated after the first sync_sources).
+        known_source_count: int => _mtimes.count;
 
         open_paths_equal(a: LIST[string], b: LIST[string]) -> bool static is
             if a.count != b.count then
@@ -299,15 +328,69 @@ namespace Analyser is
             fi
 
             sync_sources();
-            write_request(Request.COMPILE());
 
-            let response = read_response();
+            let response = exchange(Request.COMPILE());
 
             if let diagnostics: Response.DIAGNOSTICS = response then
+                maybe_heap_check();
                 return diagnostics;
             fi
 
             throw unexpected("diagnostics", response);
+        si
+
+        // Send a heap_check ping and read the response. If the analyser's
+        // watchdog decides the heap has grown past its recycle threshold,
+        // it answers with restart and then exits; drop our handle so the
+        // next request spawns a fresh process. Returns true if the
+        // analyser is still running afterwards.
+        send_heap_check() -> bool is
+            if !is_running then
+                return false;
+            fi
+
+            let response = exchange(Request.HEAP_CHECK());
+
+            return is_running;
+        si
+
+        // Every HEAP_CHECK_EVERY requests, send a heap_check ping so the
+        // watchdog can recycle a bloated process proactively.
+        maybe_heap_check() is
+            if _query_count % cast long(HEAP_CHECK_EVERY) != 0L \/ _query_count == 0L then
+                return;
+            fi
+
+            try
+                send_heap_check();
+            catch ex: Exception
+            yrt
+        si
+
+        // Send a request, read the response, and if the analyser signals
+        // restart, tear down the process (the watchdog exits after
+        // writing restart) and spawn a fresh one, then retry the request
+        // once. Anything more than one retry is unusual and surfaces as
+        // an exception the caller can convert to a tool result.
+        exchange(request: Request) -> Response is
+            _query_count = _query_count + 1L;
+
+            write_request(request);
+            let response mut = read_response();
+
+            if isa Response.RESTART(response) then
+                dispose_process();
+                ensure_spawned();
+
+                write_request(request);
+                response = read_response();
+
+                if isa Response.RESTART(response) then
+                    throw Exception("analyser requested restart twice in a row against {_project_directory}");
+                fi
+            fi
+
+            return response;
         si
 
         hover(path: string, line: int, column: int) -> Response.HOVER is
