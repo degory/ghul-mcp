@@ -28,10 +28,6 @@
     <RepositoryBranch>main</RepositoryBranch>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
 
-    <!-- No PDB in the shipped package; consumers don't debug the MCP
-         server, and shipping symbols would inflate the download without
-         benefit. Matches ghul.runtime's shape. -->
-    <DebugType>None</DebugType>
   </PropertyGroup>
 
   <ItemGroup>
