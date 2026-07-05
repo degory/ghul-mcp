@@ -34,19 +34,29 @@ analysis mode, seeds it with the project's assembly references and source
 contents, and re-sends any file whose on-disk timestamp moved before
 answering each query - results always reflect what is on disk.
 
+## Install as a .NET tool
+
+Published as `ghul.mcp` on NuGet. Add it to any project's local tool
+manifest:
+
+```sh
+dotnet new tool-manifest      # if the project has no .config/dotnet-tools.json yet
+dotnet tool install --local ghul.mcp
+```
+
 ## Usage
 
 Point the server at a ghūl project directory (its dotnet tools must be
 restored; the assemblies list is generated automatically on first use):
 
 ```sh
-dotnet ghul-mcp.dll --default-project path/to/project
+dotnet ghul-mcp --default-project path/to/project
 ```
 
 Registering with Claude Code:
 
 ```sh
-claude mcp add ghul -- dotnet <path>/ghul-mcp.dll --default-project <project-dir>
+claude mcp add ghul -- dotnet ghul-mcp --default-project <project-dir>
 ```
 
 ## Build and test

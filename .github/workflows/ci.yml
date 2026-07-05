@@ -5,9 +5,48 @@ on:
     branches: [main]
   pull_request:
 
+# Serialize release builds so concurrent pushes to main can't race over the
+# version number or the latest-release pointer. PR builds keep their own
+# per-ref group and cancel superseded runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
 jobs:
-  test:
-    name: Build and smoke test
+  version:
+    name: Create a version number
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      package: ${{ steps.version.outputs.package }}
+
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: '0'
+
+    # Patch bump the latest vX.Y.Z tag unless VERSION declares a higher
+    # minor/major floor. Pull request builds get a -beta.<run> suffix so
+    # they can't collide with a real release. Pure computation; no tag is
+    # created here.
+    - name: Determine the version
+      id: version
+      uses: degory/create-version@v1.0.0
+      with:
+        prerelease: ${{ github.event_name == 'pull_request' && format('beta.{0}', github.run_number) || '' }}
+
+  build_test_pack:
+    name: Build, smoke test, pack
+    needs: [version]
     runs-on: ubuntu-latest
 
     timeout-minutes: 10
@@ -25,3 +64,104 @@ jobs:
 
     - name: Run smoke test
       run: ./tests/smoke.sh
+
+    - name: Pack the tool
+      run: dotnet pack -nologo -p:Version=${{ needs.version.outputs.package }}
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ghul-mcp-package
+        path: ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg
+
+  publish_beta_package:
+    needs: [version, build_test_pack]
+    name: Publish beta package
+
+    timeout-minutes: 5
+
+    runs-on: ubuntu-latest
+
+    if: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Download packed tool
+      uses: actions/download-artifact@v8
+      with:
+        name: ghul-mcp-package
+        path: nupkg
+
+    - name: Publish beta package to GitHub
+      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${GITHUB_TOKEN} -s https://nuget.pkg.github.com/degory/index.json --skip-duplicate --no-symbols
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish_release_package:
+    needs: [version, build_test_pack]
+    name: Publish release package
+
+    timeout-minutes: 5
+
+    runs-on: ubuntu-latest
+
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Download packed tool
+      uses: actions/download-artifact@v8
+      with:
+        name: ghul-mcp-package
+        path: nupkg
+
+    - name: Publish release package to GitHub
+      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${GITHUB_TOKEN} -s https://nuget.pkg.github.com/degory/index.json --skip-duplicate --no-symbols
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Publish release package to NuGet
+      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${NUGET_TOKEN} -s https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+      env:
+        NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
+
+  create_release:
+    needs: [version, publish_release_package]
+    name: Create release
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 5
+    if: ${{ github.event_name != 'pull_request' }}
+
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: '0'
+
+    - name: Download packed tool
+      uses: actions/download-artifact@v8
+      with:
+        name: ghul-mcp-package
+        path: nupkg
+
+    - name: Create changelog
+      run: git log -1 --format="%s%n%n%b%n%n" >changelog.txt
+
+    - name: Create a release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create "${{ needs.version.outputs.tag }}" \
+          ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg \
+          --title "${{ needs.version.outputs.tag }}" \
+          --notes-file changelog.txt
