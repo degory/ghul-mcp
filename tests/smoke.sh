@@ -36,7 +36,7 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.5.0"' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.6.0"' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
@@ -168,10 +168,11 @@ send "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"nam
 await 24
 response 24 | grep -q 'main.ghul' || fail "2nd diagnostics: expected broken main.ghul"
 
-# --- part 4: hints_for gating -------------------------------------------
-# Verify diagnostics only emits editor-only hints (severity 4) when a file
-# is opted in via `hints_for`, and that toggling the set on/off across
-# calls busts the analyser's compile cache so hints actually re-emit.
+# --- part 4: inlays -----------------------------------------------------
+# The narrowing / flow information the editor shows inline is surfaced by the
+# file-scoped `inlays` tool. The fixture narrows a local under a presence
+# test and then reassigns it, killing the narrowing - a narrowing-presence
+# inlay followed by a narrowing-killed one.
 
 hints_dir=$(mktemp -d)
 trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
@@ -197,18 +198,28 @@ cp ghul-mcp.ghulproj "$hints_dir/hints-test.ghulproj"
 cp -r .config "$hints_dir/"
 (cd "$hints_dir" && dotnet tool restore >/dev/null)
 
+# baseline: the project compiles clean (inlays are not diagnostics)
 send "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\"}}}"
 await 30
-response 30 | grep -q '"text":"no errors or warnings"' || fail "hints: baseline diagnostics should be clean"
+response 30 | grep -q '"text":"no errors or warnings"' || fail "inlays: baseline diagnostics should be clean"
 
-send "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\",\"hints_for\":[\"src/test.ghul\"]}}}"
+# the inlays tool surfaces both narrowing sites for the file
+send "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"inlays\",\"arguments\":{\"project\":\"$hints_dir\",\"file\":\"src/test.ghul\"}}}"
 await 31
-response 31 | grep -q 'hint:' || fail "hints: hints_for should surface a narrowing-kill hint"
-response 31 | grep -q 'reassigned' || fail "hints: expected the narrowing-killed reassignment hint"
+response 31 | grep -q 'narrowing-presence' || fail "inlays: expected a narrowing-presence inlay"
+response 31 | grep -q 'narrowing-killed' || fail "inlays: expected a narrowing-killed inlay"
+response 31 | grep -q 'reassigned' || fail "inlays: expected the reassignment detail"
 
-send "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\"}}}"
+# a code filter narrows to one family
+send "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"inlays\",\"arguments\":{\"project\":\"$hints_dir\",\"file\":\"src/test.ghul\",\"code\":\"narrowing-killed\"}}}"
 await 32
-response 32 | grep -q '"text":"no errors or warnings"' || fail "hints: hints must clear when hints_for is dropped"
+response 32 | grep -q 'narrowing-killed' || fail "inlays: code filter should keep the matching family"
+response 32 | grep -q 'narrowing-presence' && fail "inlays: code filter should drop other families"
+
+# a code filter matching nothing returns a clean miss
+send "{\"jsonrpc\":\"2.0\",\"id\":33,\"method\":\"tools/call\",\"params\":{\"name\":\"inlays\",\"arguments\":{\"project\":\"$hints_dir\",\"file\":\"src/test.ghul\",\"code\":\"no-such-code\"}}}"
+await 33
+response 33 | grep -q 'no inlays in src/test.ghul match' || fail "inlays: expected miss message for an unmatched code"
 
 # --- part 5: pool operations --------------------------------------------
 # Verify the pool exposes per-session detail, that heap_check returns

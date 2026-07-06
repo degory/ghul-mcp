@@ -5,6 +5,7 @@ namespace Analyser is
     use Collections.LIST;
 
     use Analysis.Protocol.DIAGNOSTIC;
+    use Analysis.Protocol.INLAY_HINT;
     use Analysis.Protocol.LOCATION_DTO;
     use Analysis.Protocol.SYMBOL_DTO;
     use Analysis.Protocol.MEMBER_DTO;
@@ -58,9 +59,20 @@ namespace Analyser is
 
         DIAGNOSTICS_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
+            "\"file\": {{\"type\": \"string\", \"description\": \"restrict to diagnostics in this project-relative file, or under a directory prefix (e.g. `src/semantic/`)\"}},"
+            "\"severity\": {{\"type\": \"string\", \"enum\": [\"error\", \"warning\", \"info\", \"hint\"], \"description\": \"minimum severity to report: `error` shows only errors, `warning` shows warnings and errors, and so on. Absent reports everything.\"}},"
+            "\"code\": {{\"type\": \"string\", \"description\": \"restrict to diagnostics carrying this code (e.g. `cast-may-throw`, `non-optional`, `redundant-unwrap`); the default summary's by-code breakdown lists the codes present\"}},"
+            "\"exclude_codes\": {{\"type\": \"array\", \"items\": {{\"type\": \"string\"}}, \"description\": \"drop diagnostics carrying any of these codes - mute a noisy category to see what remains\"}},"
             "\"hints_for\": {{\"type\": \"array\", \"items\": {{\"type\": \"string\"}}, \"description\": \"project-relative source paths to include editor-only hint diagnostics (narrowing, narrowing-kill, and similar) for. Empty or absent suppresses all hints - hints are otherwise dropped because ghul-mcp doesn't tell the analyser what's open.\"}},"
             "{PROJECT_PROPERTY}"
             "}}}}";
+
+        INLAY_SCHEMA: string static =>
+            "{{\"type\": \"object\", \"properties\": {{"
+            "\"file\": {{\"type\": \"string\", \"description\": \"project-relative source path to read narrowing inlays for\"}},"
+            "\"code\": {{\"type\": \"string\", \"description\": \"restrict to inlays carrying this code (e.g. `narrowing-isa`, `narrowing-killed`, `narrowing-if-let`); the by-code breakdown lists the codes present\"}},"
+            "{PROJECT_PROPERTY}"
+            "}}, \"required\": [\"file\"]}}";
 
         QUERY_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
@@ -77,9 +89,18 @@ namespace Analyser is
             server.add_tool(
                 TOOL(
                     "diagnostics",
-                    "compile the ghūl project and report errors and warnings. Optionally include editor-only hint diagnostics (narrowing / narrowing-kill etc.) for specific files by listing their project-relative paths in `hints_for`",
+                    "compile the ghūl project and report errors and warnings. Large result sets come back as a summary (counts by severity, a by-code and top-files breakdown, every error in full); filter with `file`, `severity`, `code`, or `exclude_codes` to see individual warnings. For narrowing / flow annotations, use the `inlays` tool",
                     DIAGNOSTICS_SCHEMA,
                     arguments => run_diagnostics(session_from(pool, arguments), arguments)
+                )
+            );
+
+            server.add_tool(
+                TOOL(
+                    "inlays",
+                    "narrowing / flow inlays for one file, as the editor would show them inline: where a value is narrowed (to a variant, to non-null, to an isa-type) and where a narrowing is killed. File-scoped. Use to see why a value is or isn't narrowed at a point",
+                    INLAY_SCHEMA,
+                    arguments => run_inlays(session_from(pool, arguments), arguments)
                 )
             );
 
@@ -279,31 +300,386 @@ namespace Analyser is
             return "analyser for {session.project_directory} was recycled - a fresh process will spawn on next request";
         si
 
+        // A flat dump of every diagnostic is unusable on a large project -
+        // the compiler reports hundreds of warnings clustered into a handful
+        // of codes, and the occasional error drowns in them. So the default
+        // (unfiltered, large) response is a summary: counts by severity, a
+        // by-code and top-files breakdown, and every error in full. Any
+        // filter, or a small enough result, switches to the full per-line
+        // list. Callers narrow with file / severity / code / exclude_codes.
+        SUMMARY_THRESHOLD: int static => 40;
+        DETAIL_LIMIT: int static => 200;
+        TOP_FILES: int static => 12;
+
         run_diagnostics(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
             let hints_for = WIRE.try_get_string_array(arguments, "hints_for");
             let response = session.compile_diagnostics(hints_for);
-            let result = StringBuilder();
-            let count mut = 0;
+
+            let file_filter = WIRE.try_get_string(arguments, "file");
+            let code_filter = WIRE.try_get_string(arguments, "code");
+            let severity_filter = WIRE.try_get_string(arguments, "severity");
+            let excluded = _lowercased_set(WIRE.try_get_string_array(arguments, "exclude_codes"));
+            let min_severity = _severity_floor(severity_filter);
+
+            let matched = Collections.LIST[DIAGNOSTIC]();
 
             for diagnostic in response.diagnostics do
-                if !diagnostic.is_internal then
-                    result.append("{render_diagnostic(diagnostic)}\n");
-                    count = count + 1;
+                if !diagnostic.is_internal /\ _passes_filters(diagnostic, file_filter, code_filter, min_severity, excluded) then
+                    matched.add(diagnostic);
                 fi
             od
 
-            if count == 0 then
-                return "no errors or warnings";
+            if matched.count == 0 then
+                return _no_match_message(file_filter, code_filter, severity_filter, excluded);
             fi
+
+            let filters_present =
+                _has_filter(file_filter) \/ _has_filter(code_filter) \/ _has_filter(severity_filter) \/ excluded.count > 0;
+
+            if !filters_present /\ matched.count > SUMMARY_THRESHOLD then
+                return _render_summary(matched);
+            fi
+
+            return _render_detail(matched);
+        si
+
+        _passes_filters(
+            diagnostic: DIAGNOSTIC,
+            file_filter: string?,
+            code_filter: string?,
+            min_severity: int,
+            excluded: Collections.SET[string]
+        ) -> bool static is
+            if diagnostic.severity > min_severity then
+                return false;
+            fi
+
+            if let filter: string = file_filter then
+                if filter.length > 0 /\ !(diagnostic.path =~ filter \/ diagnostic.path.starts_with(filter)) then
+                    return false;
+                fi
+            fi
+
+            let code = _code_key(diagnostic).to_lower_invariant();
+
+            if let wanted: string = code_filter then
+                if wanted.length > 0 /\ code !~ wanted.to_lower_invariant() then
+                    return false;
+                fi
+            fi
+
+            if excluded.contains(code) then
+                return false;
+            fi
+
+            return true;
+        si
+
+        _render_summary(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
+            let result = StringBuilder();
+
+            result.append(_header_line(matched));
+            result.append("\n\n");
+
+            result.append("by code:\n");
+
+            for entry in _counted_desc(matched, d => _code_key(d)) do
+                result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
+            od
+
+            result.append("\ntop files:\n");
+
+            let files = _counted_desc(matched, d => d.path);
+            let shown mut = 0;
+
+            for entry in files do
+                if shown < TOP_FILES then
+                    result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
+                    shown = shown + 1;
+                fi
+            od
+
+            if files.count > TOP_FILES then
+                result.append("  ... and {files.count - TOP_FILES} more files\n");
+            fi
+
+            let errors = _errors_of(matched);
+
+            if errors.count > 0 then
+                result.append("\nerrors:\n");
+
+                for diagnostic in errors do
+                    result.append("  {render_diagnostic(diagnostic)}\n");
+                od
+            fi
+
+            result.append("\nSummary only - filter with file=, severity=, code=, or exclude_codes=[...] to see individual warnings.\n");
+            result.append(_inlay_pointer(matched));
 
             return result.to_string();
         si
 
-        render_diagnostic(diagnostic: DIAGNOSTIC) -> string static =>
-            "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}";
+        _render_detail(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
+            let sorted = Collections.LIST[DIAGNOSTIC](matched | .sort((a, b) => _compare_diagnostics(a, b)));
+
+            let result = StringBuilder();
+
+            result.append(_header_line(matched));
+            result.append("\n\n");
+
+            let shown mut = 0;
+
+            for diagnostic in sorted do
+                if shown < DETAIL_LIMIT then
+                    result.append("{render_diagnostic(diagnostic)}\n");
+                fi
+
+                shown = shown + 1;
+            od
+
+            if shown > DETAIL_LIMIT then
+                result.append("... and {shown - DETAIL_LIMIT} more - narrow with file=, severity=, code=, or exclude_codes=[...]\n");
+            fi
+
+            result.append(_inlay_pointer(matched));
+
+            return result.to_string();
+        si
+
+        // A one-line pointer to the inlays tool, emitted only when the result
+        // carries a narrowing-adjacent code - the situation where the flow
+        // annotations are worth pulling. Empty otherwise, so the common clean
+        // check stays quiet.
+        _inlay_pointer(matched: Collections.Iterable[DIAGNOSTIC]) -> string static is
+            for diagnostic in matched do
+                let code = _code_key(diagnostic).to_lower_invariant();
+
+                if code =~ "redundant-unwrap" \/ code =~ "null-deref" then
+                    return "For the narrowing / flow behind these, call inlays(file=...).\n";
+                fi
+            od
+
+            return "";
+        si
+
+        // One line: "N errors, M warnings across K files", omitting the
+        // info / hint counts unless present (hints only appear when hints_for
+        // opts a file in).
+        _header_line(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
+            let errors mut = 0;
+            let warnings mut = 0;
+            let infos mut = 0;
+            let hints mut = 0;
+            let files = Collections.SET[string]();
+
+            for diagnostic in matched do
+                files.add(diagnostic.path);
+
+                if diagnostic.severity <= 1 then
+                    errors = errors + 1;
+                elif diagnostic.severity == 2 then
+                    warnings = warnings + 1;
+                elif diagnostic.severity == 3 then
+                    infos = infos + 1;
+                else
+                    hints = hints + 1;
+                fi
+            od
+
+            let parts = Collections.LIST[string]();
+
+            parts.add(_plural(errors, "error"));
+            parts.add(_plural(warnings, "warning"));
+
+            if infos > 0 then
+                parts.add(_plural(infos, "info"));
+            fi
+
+            if hints > 0 then
+                parts.add(_plural(hints, "hint"));
+            fi
+
+            return "{_join(parts, ", ")} across {_plural(files.count, "file")}";
+        si
+
+        _errors_of(matched: Collections.Iterable[DIAGNOSTIC]) -> Collections.LIST[DIAGNOSTIC] static is
+            let errors = Collections.LIST[DIAGNOSTIC]();
+
+            for diagnostic in matched do
+                if diagnostic.severity <= 1 then
+                    errors.add(diagnostic);
+                fi
+            od
+
+            return errors;
+        si
+
+        // Count items by a key, returned high-to-low so the biggest
+        // categories lead.
+        _counted_desc[T](matched: Collections.Iterable[T], key_of: (T) -> string) -> Collections.LIST[COUNTED] static is
+            let counts = Collections.MAP[string, int]();
+
+            for diagnostic in matched do
+                let key = key_of(diagnostic);
+
+                if counts.contains_key(key) then
+                    counts[key] = counts[key] + 1;
+                else
+                    counts[key] = 1;
+                fi
+            od
+
+            let pairs = Collections.LIST[COUNTED]();
+
+            for entry in counts do
+                pairs.add(COUNTED(entry.key, entry.value));
+            od
+
+            return Collections.LIST[COUNTED](pairs | .sort((a, b) => b.count - a.count));
+        si
+
+        _no_match_message(file_filter: string?, code_filter: string?, severity_filter: string?, excluded: Collections.SET[string]) -> string static is
+            let constraints = Collections.LIST[string]();
+
+            if _has_filter(file_filter) then
+                constraints.add("file={file_filter}");
+            fi
+
+            if _has_filter(severity_filter) then
+                constraints.add("severity={severity_filter}");
+            fi
+
+            if _has_filter(code_filter) then
+                constraints.add("code={code_filter}");
+            fi
+
+            if excluded.count > 0 then
+                constraints.add("exclude_codes");
+            fi
+
+            if constraints.count == 0 then
+                return "no errors or warnings";
+            fi
+
+            return "no diagnostics match {_join(constraints, ", ")}";
+        si
+
+        render_diagnostic(diagnostic: DIAGNOSTIC) -> string static is
+            let code = diagnostic.code;
+
+            let suffix =
+                if code? /\ code.length > 0 then
+                    " [{code}]"
+                else
+                    ""
+                fi;
+
+            return "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}{suffix}";
+        si
+
+        _code_key(diagnostic: DIAGNOSTIC) -> string static is
+            let code = diagnostic.code;
+
+            if code? /\ code.length > 0 then
+                return code;
+            fi
+
+            return "(uncoded)";
+        si
+
+        _compare_diagnostics(a: DIAGNOSTIC, b: DIAGNOSTIC) -> int static is
+            if a.severity != b.severity then
+                return a.severity - b.severity;
+            fi
+
+            if a.path !~ b.path then
+                return a.path.compare_to(b.path);
+            fi
+
+            if a.start_line != b.start_line then
+                return a.start_line - b.start_line;
+            fi
+
+            return a.start_column - b.start_column;
+        si
+
+        _has_filter(text: string?) -> bool static => text? /\ text.length > 0;
+
+        _lowercased_set(values: Collections.Iterable[string]) -> Collections.SET[string] static is
+            let set = Collections.SET[string]();
+
+            for value in values do
+                if value? /\ value.length > 0 then
+                    set.add(value.to_lower_invariant());
+                fi
+            od
+
+            return set;
+        si
+
+        // Minimum-severity floor as a diagnostic severity int (lower is more
+        // severe: 1 error, 2 warning, 3 info, 4 hint). A diagnostic passes
+        // when its severity is at or below the floor. Absent or unrecognised
+        // means no floor.
+        _severity_floor(name: string?) -> int static is
+            if !name? \/ name.length == 0 then
+                return 99;
+            fi
+
+            let normalized = name.to_lower_invariant();
+
+            if normalized =~ "error" then
+                return 1;
+            elif normalized =~ "warning" \/ normalized =~ "warn" then
+                return 2;
+            elif normalized =~ "info" then
+                return 3;
+            elif normalized =~ "hint" then
+                return 4;
+            fi
+
+            return 99;
+        si
+
+        _plural(count: int, word: string) -> string static =>
+            if count == 1 then
+                "{count} {word}"
+            else
+                "{count} {word}s"
+            fi;
+
+        _join(parts: Collections.Iterable[string], separator: string) -> string static is
+            let result = StringBuilder();
+            let first mut = true;
+
+            for part in parts do
+                if !first then
+                    result.append(separator);
+                fi
+
+                result.append(part);
+                first = false;
+            od
+
+            return result.to_string();
+        si
+
+        _pad_left(text: string, width: int) -> string static is
+            let result = StringBuilder();
+            let padding mut = width - text.length;
+
+            while padding > 0 do
+                result.append(' ');
+                padding = padding - 1;
+            od
+
+            result.append(text);
+
+            return result.to_string();
+        si
 
         severity_name(severity: int) -> string static =>
-            if severity == 1 then
+            if severity <= 1 then
                 "error"
             elif severity == 2 then
                 "warning"
@@ -312,6 +688,88 @@ namespace Analyser is
             else
                 "hint"
             fi;
+
+        run_inlays(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
+            let file = WIRE.try_get_string(arguments, "file");
+
+            if !file? \/ file.length == 0 then
+                throw System.Exception("file argument is required");
+            fi
+
+            let code_filter = WIRE.try_get_string(arguments, "code");
+            let wanted =
+                if let c: string = code_filter then
+                    c.to_lower_invariant()
+                else
+                    ""
+                fi;
+
+            let response = session.inlay_hints(file);
+
+            let matched = Collections.LIST[INLAY_HINT]();
+
+            for hint in response.hints do
+                if wanted.length == 0 \/ hint.code.to_lower_invariant() =~ wanted then
+                    matched.add(hint);
+                fi
+            od
+
+            if matched.count == 0 then
+                if _has_filter(code_filter) then
+                    return "no inlays in {file} match code={code_filter}";
+                fi
+
+                return "no narrowing inlays in {file}";
+            fi
+
+            let result = StringBuilder();
+
+            result.append("{_plural(matched.count, "inlay")} in {file}\n\n");
+            result.append("by code:\n");
+
+            for entry in _counted_desc(matched, h => h.code) do
+                result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
+            od
+
+            result.append("\n");
+
+            let shown mut = 0;
+
+            for hint in matched do
+                if shown < DETAIL_LIMIT then
+                    result.append("{render_inlay(file, hint)}\n");
+                fi
+
+                shown = shown + 1;
+            od
+
+            if shown > DETAIL_LIMIT then
+                result.append("... and {shown - DETAIL_LIMIT} more - filter with code=\n");
+            fi
+
+            return result.to_string();
+        si
+
+        // Inlays render as their detail (the tooltip sentence the editor shows
+        // on hover) rather than the terse inline label, which is often a bare
+        // glyph - the detail is what an agent can actually reason from.
+        render_inlay(file: string, hint: INLAY_HINT) -> string static is
+            let text =
+                if hint.detail.length > 0 then
+                    hint.detail
+                else
+                    hint.label
+                fi;
+
+            let suffix =
+                if hint.code.length > 0 then
+                    " [{hint.code}]"
+                else
+                    ""
+                fi;
+
+            return "{file}:{hint.line}:{hint.column}: {text}{suffix}";
+        si
 
         run_hover(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
             let position = read_position(arguments);
@@ -831,6 +1289,18 @@ namespace Analyser is
         init(file: string, symbol: SYMBOL_DTO) is
             self.file = file;
             self.symbol = symbol;
+        si
+    si
+
+    // A group key paired with how many diagnostics fell under it, for the
+    // by-code / top-files breakdowns in the diagnostics summary.
+    class COUNTED is
+        key: string public;
+        count: int public;
+
+        init(key: string, count: int) is
+            self.key = key;
+            self.count = count;
         si
     si
 si
