@@ -397,11 +397,12 @@ namespace Analyser is
         // client raises here is a lot clearer than the wire-level hang
         // that a version mismatch otherwise causes.
         //
-        // Held at 19.13.0 because that's the first version that emits
-        // compiler_version on the LISTEN frame (ghul#1634): anything
-        // older can't be checked, so we treat the absence of the field
-        // as "too old to negotiate" and refuse to talk.
-        MIN_COMPILER_VERSION: string static => "19.13.0";
+        // Held at 20.3.0 because that's the first version answering the
+        // INLAY_HINTS query the `inlays` tool depends on (ghul#1642).
+        // Older analysers also predate compiler_version on the LISTEN
+        // frame (ghul#1634, 19.13.0), which we treat as "too old to
+        // negotiate" and refuse to talk to.
+        MIN_COMPILER_VERSION: string static => "20.3.0";
 
         _reject_if_compiler_too_old(reported: string?) is
             if !reported? \/ reported.length == 0 then
@@ -586,6 +587,22 @@ namespace Analyser is
             fi
 
             throw unexpected("diagnostics", response);
+        si
+
+        // Narrowing inlays for one file. The analyser only records inlays
+        // for files in the open set during compile-expressions, so drive a
+        // compile with `path` open (reusing the diagnostics path's open-set
+        // handling and cache-busting) before the retrieval query.
+        inlay_hints(path: string) -> Response.INLAY_HINTS is
+            compile_diagnostics(Collections.LIST([path]));
+
+            let response = query(Request.INLAY_HINTS(path));
+
+            if let inlays: Response.INLAY_HINTS = response then
+                return inlays;
+            fi
+
+            throw unexpected("inlay_hints", response);
         si
 
         // Send a heap_check ping and read the response. If the analyser's

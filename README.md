@@ -19,8 +19,14 @@ can each stay warm.
 
 Tools:
 
-- Position-based: `diagnostics`, `hover`, `definition`, `references`,
-  `implementations`.
+- Whole-project: `diagnostics` (errors and warnings). A large result comes
+  back as a summary - counts by severity, a by-code and top-files
+  breakdown, every error in full - which you narrow with `file`,
+  `severity`, `code`, or `exclude_codes`.
+- File-scoped: `inlays` (the narrowing / flow annotations the editor shows
+  inline for one file - where a value is narrowed and where a narrowing is
+  killed); optional `code` filter.
+- Position-based: `hover`, `definition`, `references`, `implementations`.
 - Name-based: `symbols` (substring search), `hover_of`, `definition_of`,
   `references_of`, `implementations_of` (resolve a name and return the
   answer, or the candidate list when a name is shared).

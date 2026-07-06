@@ -37,6 +37,6 @@
     <GhulSources Include="src/**/*.ghul" />
 
     <PackageReference Include="ghul.runtime" Version="5.3.0" />
-    <PackageReference Include="ghul.analysis.protocol" Version="19.13.0" />
+    <PackageReference Include="ghul.analysis.protocol" Version="20.4.0" />
   </ItemGroup>
 </Project>
