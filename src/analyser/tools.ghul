@@ -1174,12 +1174,24 @@ namespace Analyser is
         // ("... // instance property", "... // function group"). Append the
         // inherited-from qualifier when the analyser attributed the member
         // to an ancestor so the caller can distinguish direct vs. inherited.
-        render_member(member: MEMBER_DTO) -> string static =>
+        // A current analyser sends the pure head in `description` and the
+        // classifier separately in `kind_label`; an older one folds them into
+        // `description` and leaves `kind_label` null. Appending the label only
+        // when present reconstructs the `head // kind` listing for both.
+        render_member(member: MEMBER_DTO) -> string static is
+            let head =
+                if let kind_label: string = member.kind_label then
+                    "{member.description} // {kind_label}"
+                else
+                    member.description
+                fi;
+
             if member.is_inherited /\ member.inherited_from.length > 0 then
-                "{member.description} [from {member.inherited_from}]"
-            else
-                member.description
-            fi;
+                return "{head} [from {member.inherited_from}]";
+            fi
+
+            return head;
+        si
 
         // Whether a `members` type argument looks like a bare identifier
         // (no dot, no bracket) so the bare-name fallback should try to
