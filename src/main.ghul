@@ -1,6 +1,6 @@
 use IO.Std;
 
-server_version: string => "0.6.0";
+server_version: string => "0.7.0";
 
 // Cap on the pool of concurrently-warm analyser sessions. Each analyser is
 // a `dotnet ghul-compiler --analyse` subprocess, and each holds an

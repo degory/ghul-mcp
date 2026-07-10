@@ -189,6 +189,90 @@ namespace Analyser is
             yrt
         si
 
+        // Parse the single .ghulproj and return the compiler options the
+        // command-line build passes but the analyser otherwise wouldn't:
+        // the flags after `ghul-compiler` in `<GhulCompiler>` (e.g.
+        // `--underscore-access legacy`) plus every `<GhulOptions Include="…" />`
+        // that carries no `Condition` (e.g. `--warn-as-hint <slug>`).
+        // Condition-guarded options are skipped so the analyser tracks a local
+        // build, not a CI build. Empty on any read failure.
+        load_ghulproj_compiler_options() -> LIST[string] is
+            let result = LIST[string]();
+
+            let projects = Directory.get_files(_project_directory, "*.ghulproj");
+
+            if projects.count != 1 then
+                return result;
+            fi
+
+            try
+                let document = System.Xml.Linq.XDocument.load(projects[0]);
+                let root = document.root;
+
+                if !root? then
+                    return result;
+                fi
+
+                for element in root.descendants(System.Xml.Linq.XName.get("GhulCompiler")) do
+                    let seen_program mut = false;
+
+                    for token in _tokenize(element.value) do
+                        if seen_program then
+                            result.add(token);
+                        elif token.ends_with("ghul-compiler") then
+                            seen_program = true;
+                        fi
+                    od
+                od
+
+                for element in root.descendants(System.Xml.Linq.XName.get("GhulOptions")) do
+                    let condition_attr = element.attribute(System.Xml.Linq.XName.get("Condition"));
+
+                    if !condition_attr? then
+                        let include_attr = element.attribute(System.Xml.Linq.XName.get("Include"));
+
+                        if include_attr? then
+                            for token in _tokenize(include_attr.value) do
+                                result.add(token);
+                            od
+                        fi
+                    fi
+                od
+
+                return result;
+            catch ex: Exception
+                return result;
+            yrt
+        si
+
+        // Split a command fragment on runs of whitespace, dropping empties.
+        _tokenize(text: string) -> LIST[string] is
+            let result = LIST[string]();
+
+            if !text? then
+                return result;
+            fi
+
+            let current = StringBuilder();
+
+            for c in text do
+                if c == ' ' \/ c == '\t' \/ c == '\n' \/ c == '\r' then
+                    if current.length > 0 then
+                        result.add(current.to_string());
+                        current.clear();
+                    fi
+                else
+                    current.append(c);
+                fi
+            od
+
+            if current.length > 0 then
+                result.add(current.to_string());
+            fi
+
+            return result;
+        si
+
         // Expand one MSBuild-style glob against the project directory. The
         // common cases the compiler and its sibling projects actually use
         // are `<prefix>/**/*.ghul`, `**/*.ghul`, `<prefix>/*.ghul`, and a
@@ -324,6 +408,15 @@ namespace Analyser is
             for assembly in assemblies_file.assemblies do
                 arguments.add("-a");
                 arguments.add(assembly);
+            od
+
+            // Match the command-line build: forward the ghulproj's own
+            // compiler options. Without `--underscore-access legacy` the
+            // compiler's legacy cross-class `_`-member accesses report as
+            // inaccessible; without `--warn-as-hint <slug>` demoted warnings
+            // come back as full warnings.
+            for option in load_ghulproj_compiler_options() do
+                arguments.add(option);
             od
 
             arguments.add("-A");
