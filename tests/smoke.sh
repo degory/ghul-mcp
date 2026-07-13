@@ -15,6 +15,9 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # --- part 1: protocol core ----------------------------------------------
 
+qlog_tmp=$(mktemp -d)
+qlog="$qlog_tmp/query-log.jsonl"
+
 out=$(printf '%s\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
@@ -23,7 +26,7 @@ out=$(printf '%s\n' \
     '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"version","arguments":{}}}' \
     '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"no-such-tool"}}' \
     '{"jsonrpc":"2.0","id":6,"method":"no/such/method"}' \
-    | dotnet "$server")
+    | dotnet "$server" --query-log "$qlog")
 
 echo "$out"
 
@@ -36,10 +39,21 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.7.0"' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.8.0"' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
+
+# Every tools/call dispatch lands in the query log with a status.
+[ -f "$qlog" ] || fail "query log: file not written"
+grep -q '"event":"start"' "$qlog" || fail "query log: start entry"
+grep -q '"tool":"version"' "$qlog" || fail "query log: version call entry"
+grep -q '"status":"ok"' "$qlog" || fail "query log: ok status"
+grep -q '"status":"unknown-tool"' "$qlog" || fail "query log: unknown-tool status"
+qlog_calls=$(grep -c '"event":"call"' "$qlog")
+[ "$qlog_calls" -eq 2 ] || fail "query log: expected 2 call entries, got $qlog_calls"
+
+rm -rf "$qlog_tmp"
 
 # --- part 2: analyser tools ---------------------------------------------
 
@@ -59,7 +73,7 @@ cp -r src ghul-mcp.ghulproj .config "$tmp/"
 cp "$tmp/src/main.ghul" "$tmp/main.pristine"
 
 mkfifo "$fifo"
-dotnet "$server" --default-project "$tmp" <"$fifo" >"$responses" &
+dotnet "$server" --default-project "$tmp" --query-log "$tmp/query-log.jsonl" <"$fifo" >"$responses" &
 server_pid=$!
 exec 3>"$fifo"
 
@@ -245,5 +259,14 @@ response 43 | grep -q "no warm session" || fail "release_session: expected miss 
 exec 3>&-
 wait "$server_pid" 2>/dev/null || true
 server_pid=""
+
+# The long-lived server logged every analyser dispatch, and none of the
+# calls above should have surfaced as an error status.
+qlog2="$tmp/query-log.jsonl"
+[ -f "$qlog2" ] || fail "query log: long-lived server wrote no log"
+grep -q '"tool":"diagnostics"' "$qlog2" || fail "query log: diagnostics entries"
+grep -q '"tool":"hover"' "$qlog2" || fail "query log: hover entry"
+grep -q '"tool":"inlays"' "$qlog2" || fail "query log: inlays entries"
+grep -q '"status":"error"' "$qlog2" && fail "query log: unexpected error status"
 
 echo "smoke test passed"

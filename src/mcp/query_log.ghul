@@ -1,0 +1,165 @@
+namespace MCP is
+    use System.Text.Json.JsonElement;
+    use System.Text.Json.JsonSerializer;
+    use System.Text.Json.JsonValueKind;
+
+    use IO.Directory;
+    use IO.File;
+    use IO.Path;
+    use IO.Std;
+
+    // Append-only JSONL record of every tools/call dispatch: what was asked,
+    // whether it succeeded, how long it took, and the head of the result
+    // text. Exists to make the server's reliability measurable offline - a
+    // failed or useless answer otherwise vanishes with the client
+    // conversation that saw it. One JSON object per line, so the log is
+    // greppable and loads with any JSONL reader.
+    //
+    // Logging must never break the server: any filesystem failure disables
+    // the log for the rest of the run, reported once on stderr.
+    class QUERY_LOG is
+        _path: string?;
+        _pid: int;
+
+        // At startup an existing log past this size is renamed to
+        // `<path>.prev` (replacing any earlier rotation) so the log never
+        // grows without bound.
+        MAX_BYTES_BEFORE_ROTATE: long static => 10000000L;
+
+        // Result text is truncated to this many characters in the log -
+        // enough to capture miss messages and the shape of an answer
+        // without recording whole diagnostics dumps.
+        HEAD_LENGTH: int static => 300;
+
+        init(path: string?) is
+            _path = path;
+            _pid = System.Environment.process_id;
+
+            if let p: string = path then
+                try
+                    let directory = Path.get_directory_name(p);
+
+                    if directory? /\ directory.length > 0 then
+                        Directory.create_directory(directory);
+                    fi
+
+                    if File.exists(p) /\ IO.FileInfo(p).length > MAX_BYTES_BEFORE_ROTATE then
+                        File.move(p, "{p}.prev", true);
+                    fi
+                catch ex: System.Exception
+                    _disable(ex.message);
+                yrt
+            fi
+        si
+
+        path: string? => _path;
+
+        log_start(server: string, version: string, default_project: string?) is
+            _append(START_ENTRY(_now(), _pid, server, version, default_project ?? ""));
+        si
+
+        log_call(tool: string, arguments: JsonElement, status: string, elapsed_ms: long, result: string) is
+            _append(
+                CALL_ENTRY(
+                    _now(),
+                    _pid,
+                    tool,
+                    _render_arguments(arguments),
+                    status,
+                    elapsed_ms,
+                    result.length,
+                    _head(result)
+                )
+            );
+        si
+
+        _append(entry: object) is
+            if let p: string = _path then
+                try
+                    File.append_all_text(p, "{JsonSerializer.serialize(entry, entry.get_type(), WIRE.options)}\n");
+                catch ex: System.Exception
+                    _disable(ex.message);
+                yrt
+            fi
+        si
+
+        _disable(reason: string) is
+            Std.error.write_line("ghul-mcp: query log disabled: {reason}");
+            _path = null;
+        si
+
+        _render_arguments(arguments: JsonElement) -> string static is
+            if arguments.value_kind == JsonValueKind.UNDEFINED then
+                return "";
+            fi
+
+            try
+                return arguments.get_raw_text();
+            catch ex: System.Exception
+                return "";
+            yrt
+        si
+
+        _head(text: string) -> string static is
+            if text.length <= HEAD_LENGTH then
+                return text;
+            fi
+
+            return "{text.substring(0, HEAD_LENGTH)}...";
+        si
+
+        _now() -> string static =>
+            System.DateTime.utc_now.to_string("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");
+    si
+
+    class START_ENTRY is
+        at: string public;
+        event: string public;
+        pid: int public;
+        server: string public;
+        version: string public;
+        default_project: string public;
+
+        init(at: string, pid: int, server: string, version: string, default_project: string) is
+            self.at = at;
+            event = "start";
+            self.pid = pid;
+            self.server = server;
+            self.version = version;
+            self.default_project = default_project;
+        si
+    si
+
+    class CALL_ENTRY is
+        at: string public;
+        event: string public;
+        pid: int public;
+        tool: string public;
+        arguments: string public;
+        status: string public;
+        elapsed_ms: long public;
+        result_chars: int public;
+        result: string public;
+
+        init(
+            at: string,
+            pid: int,
+            tool: string,
+            arguments: string,
+            status: string,
+            elapsed_ms: long,
+            result_chars: int,
+            result: string
+        ) is
+            self.at = at;
+            event = "call";
+            self.pid = pid;
+            self.tool = tool;
+            self.arguments = arguments;
+            self.status = status;
+            self.elapsed_ms = elapsed_ms;
+            self.result_chars = result_chars;
+            self.result = result;
+        si
+    si
+si

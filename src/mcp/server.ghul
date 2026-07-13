@@ -8,14 +8,16 @@ namespace MCP is
         _reader: IO.TextReader;
         _writer: IO.TextWriter;
         _tools: LIST[TOOL];
+        _query_log: QUERY_LOG;
 
         name: string;
         version: string;
 
-        init(reader: IO.TextReader, writer: IO.TextWriter, name: string, version: string) is
+        init(reader: IO.TextReader, writer: IO.TextWriter, name: string, version: string, query_log: QUERY_LOG) is
             _reader = reader;
             _writer = writer;
             _tools = LIST[TOOL]();
+            _query_log = query_log;
 
             self.name = name;
             self.version = version;
@@ -66,28 +68,36 @@ namespace MCP is
         si
 
         handle_tool_call(request: REQUEST) is
+            let stopwatch = System.Diagnostics.Stopwatch.start_new();
+
             let name = WIRE.try_get_string(request.params, "name");
+            let arguments = WIRE.try_get_element(request.params, "arguments");
 
             if !name? then
+                _query_log.log_call("(unnamed)", arguments, "invalid-request", stopwatch.elapsed_milliseconds, "tools/call requires a tool name");
                 reply_error(request, -32602, "tools/call requires a tool name");
                 return;
             fi
 
-            let tool = find_tool(name);
+            let tool_name = name;
+            let tool = find_tool(tool_name);
 
             if !tool? then
-                reply_error(request, -32602, "unknown tool: {name}");
+                _query_log.log_call(tool_name, arguments, "unknown-tool", stopwatch.elapsed_milliseconds, "unknown tool: {tool_name}");
+                reply_error(request, -32602, "unknown tool: {tool_name}");
                 return;
             fi
 
-            let arguments = WIRE.try_get_element(request.params, "arguments");
-
             try
-                reply(request, CALL_RESULT(tool.call(arguments), false));
+                let result = tool.call(arguments);
+
+                _query_log.log_call(tool_name, arguments, "ok", stopwatch.elapsed_milliseconds, result);
+                reply(request, CALL_RESULT(result, false));
             catch ex: System.Exception
                 // Tool failures are results, not protocol errors, so the
                 // model calling the tool sees the message.
-                reply(request, CALL_RESULT("{name} failed: {ex.message}", true));
+                _query_log.log_call(tool_name, arguments, "error", stopwatch.elapsed_milliseconds, "{ex.get_type().name}: {ex.message}");
+                reply(request, CALL_RESULT("{tool_name} failed: {ex.message}", true));
             yrt
         si
 

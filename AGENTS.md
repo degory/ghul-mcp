@@ -16,7 +16,8 @@ references, symbol search — by driving `ghul-compiler --analyse` through the
   registers tools, runs the server loop.
 - `src/mcp/` — MCP protocol core: `wire.ghul` (JSON-RPC envelope, framing,
   serializer options), `server.ghul` (method dispatch and result DTOs),
-  `tools.ghul` (the tool abstraction).
+  `tools.ghul` (the tool abstraction), `query_log.ghul` (the JSONL
+  dispatch log every tools/call is recorded to - see README).
 - `src/analyser/` — the semantic layer: `session.ghul` (spawns the target
   project's pinned compiler in analysis mode, seeds and freshens sources,
   speaks the `ghul.analysis.protocol` wire), `tools.ghul` (maps MCP tool

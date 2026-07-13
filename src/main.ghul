@@ -1,6 +1,6 @@
 use IO.Std;
 
-server_version: string => "0.7.0";
+server_version: string => "0.8.0";
 
 // Cap on the pool of concurrently-warm analyser sessions. Each analyser is
 // a `dotnet ghul-compiler --analyse` subprocess, and each holds an
@@ -8,11 +8,32 @@ server_version: string => "0.7.0";
 // pool evicts the least recently used.
 max_sessions: int => 8;
 
+// Where the query log goes when no --query-log / --no-query-log argument
+// says otherwise: the XDG state directory, shared by every server instance
+// (entries carry the pid). Null - logging off - only when no home
+// directory is discoverable.
+default_query_log_path() -> string? is
+    let state_home = System.Environment.get_environment_variable("XDG_STATE_HOME");
+
+    if state_home? /\ state_home.length > 0 then
+        return IO.Path.combine(state_home, "ghul-mcp", "query-log.jsonl");
+    fi
+
+    let home = System.Environment.get_environment_variable("HOME");
+
+    if home? /\ home.length > 0 then
+        return IO.Path.combine(IO.Path.combine(home, ".local", "state"), "ghul-mcp", "query-log.jsonl");
+    fi
+
+    return null;
+si
+
 entry(arguments: string[]) is
     Std.input_encoding = System.Text.UTF8Encoding(false);
     Std.output_encoding = System.Text.UTF8Encoding(false);
 
     let default_project: string? mut = null;
+    let query_log_path: string? mut = default_query_log_path();
 
     let index mut = 0;
 
@@ -22,6 +43,12 @@ entry(arguments: string[]) is
         if (arg =~ "--project" \/ arg =~ "--default-project") /\ index + 1 < arguments.count then
             default_project = arguments[index + 1];
             index = index + 2;
+        elif arg =~ "--query-log" /\ index + 1 < arguments.count then
+            query_log_path = arguments[index + 1];
+            index = index + 2;
+        elif arg =~ "--no-query-log" then
+            query_log_path = null;
+            index = index + 1;
         else
             Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arg}");
             index = index + 1;
@@ -36,8 +63,11 @@ entry(arguments: string[]) is
             65536
         );
 
-    let server = MCP.SERVER(reader, Std.out, "ghul-mcp", server_version);
+    let query_log = MCP.QUERY_LOG(query_log_path);
+    let server = MCP.SERVER(reader, Std.out, "ghul-mcp", server_version, query_log);
     let pool = Analyser.ANALYSER_POOL(default_project, max_sessions);
+
+    query_log.log_start("ghul-mcp", server_version, pool.default_project);
 
     server.add_tool(
         MCP.TOOL(
