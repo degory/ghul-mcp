@@ -65,6 +65,24 @@ Registering with Claude Code:
 claude mcp add ghul -- dotnet ghul-mcp --default-project <project-dir>
 ```
 
+## Query log
+
+The server appends one JSON line per `tools/call` dispatch to a query log:
+timestamp, pid, tool name, raw arguments, status (`ok`, `error`,
+`unknown-tool`, `invalid-request`), elapsed milliseconds, result size, and
+the first 300 characters of the result text. Analyser failures - spawn
+failures, timeouts, restart loops - surface as `error` entries carrying the
+exception message, so the log answers "is this server actually working
+reliably, and are its answers useful?" after the fact.
+
+The log defaults to `$XDG_STATE_HOME/ghul-mcp/query-log.jsonl` (falling
+back to `~/.local/state/ghul-mcp/query-log.jsonl`), shared by every server
+instance - entries carry the pid to tell sessions apart. `--query-log
+<path>` redirects it; `--no-query-log` disables it. At startup a log past
+10 MB is rotated to `<path>.prev`. A logging failure never breaks the
+server: it disables the log for the rest of the run and reports once on
+stderr.
+
 ## Build and test
 
 ```sh
