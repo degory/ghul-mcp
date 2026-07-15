@@ -105,6 +105,23 @@ namespace Analyser is
             return result;
         si
 
+        // The warm session for `project` (or the default project) if the
+        // pool holds one. Never spawns and doesn't touch the LRU order, so
+        // it's safe for status queries.
+        warm_session_for(project: string?) -> ANALYSER_SESSION? is
+            if (!project? \/ project.length == 0) /\ !_default_project? then
+                return null;
+            fi
+
+            let path = resolve(project);
+
+            if _sessions.contains_key(path) then
+                return _sessions[path];
+            fi
+
+            return null;
+        si
+
         // Explicit eviction, so a caller can free a session that's known to
         // be idle (e.g. a worktree has been removed).
         release(project: string) -> bool is
