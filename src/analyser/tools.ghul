@@ -197,7 +197,7 @@ namespace Analyser is
             server.add_tool(
                 TOOL(
                     "sessions",
-                    "list the analyser sessions currently warm in the pool - project directory, OS pid, and known source count for each",
+                    "list the analyser sessions currently warm in the pool - project directory, OS pid, compiler version, and known source count for each",
                     "{{\"type\": \"object\", \"properties\": {{}}}}",
                     arguments => run_sessions(pool)
                 )
@@ -246,7 +246,15 @@ namespace Analyser is
                         "not running"
                     fi;
 
-                result.append("{session.project_directory} ({pid_text}, {session.known_source_count} sources)\n");
+                let compiler = session.compiler_version;
+                let compiler_text =
+                    if compiler? then
+                        "ghul.compiler {compiler}"
+                    else
+                        "compiler version unknown"
+                    fi;
+
+                result.append("{session.project_directory} ({pid_text}, {compiler_text}, {session.known_source_count} sources)\n");
             od
 
             if let default_project: string = pool.default_project then

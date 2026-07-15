@@ -36,6 +36,7 @@ namespace Analyser is
         _options: JsonSerializerOptions;
         _process: Process?;
         _response_file: string?;
+        _compiler_version: string?;
         _mtimes: MAP[string, System.DateTime];
         _stderr_capture: StringBuilder;
         _last_hints_for: LIST[string];
@@ -87,6 +88,10 @@ namespace Analyser is
         // The number of source files known to this session (empty on a
         // fresh session, populated after the first sync_sources).
         known_source_count: int => _mtimes.count;
+
+        // Compiler version the analyser advertised on its LISTEN frame,
+        // or null before the first spawn.
+        compiler_version: string? => _compiler_version;
 
         open_paths_equal(a: LIST[string], b: LIST[string]) -> bool static is
             if a.count != b.count then
@@ -478,6 +483,8 @@ namespace Analyser is
 
             if let listen: Response.LISTEN = first then
                 _reject_if_compiler_too_old(listen.compiler_version);
+
+                _compiler_version = listen.compiler_version;
             else
                 throw Exception("expected listen as the analyser's first response - is the ghul.compiler tool restored in {_project_directory}?\nstderr so far:\n{_stderr_capture}");
             fi

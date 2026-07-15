@@ -1,6 +1,25 @@
 use IO.Std;
 
-server_version: string => "0.8.0";
+server_version: string => "0.9.0";
+
+// The server version plus, when the default project has a warm analyser
+// session, the compiler version it advertised at spawn. Sessions for other
+// projects show their compiler version in the `sessions` tool instead.
+describe_version(pool: Analyser.ANALYSER_POOL) -> string is
+    let session = pool.warm_session_for(null);
+
+    if !session? then
+        return "ghul-mcp {server_version} (no analyser session warm for the default project)";
+    fi
+
+    let compiler = session.compiler_version;
+
+    if compiler? then
+        return "ghul-mcp {server_version} (ghul.compiler {compiler})";
+    fi
+
+    return "ghul-mcp {server_version} (compiler version unknown)";
+si
 
 // Cap on the pool of concurrently-warm analyser sessions. Each analyser is
 // a `dotnet ghul-compiler --analyse` subprocess, and each holds an
@@ -72,9 +91,9 @@ entry(arguments: string[]) is
     server.add_tool(
         MCP.TOOL(
             "version",
-            "report the ghul-mcp server version",
+            "report the ghul-mcp server version, plus the analyser's compiler version when a session is warm for the default project",
             "{{\"type\": \"object\", \"properties\": {{}}}}",
-            arguments => "ghul-mcp {server_version}"
+            arguments => describe_version(pool)
         )
     );
 
