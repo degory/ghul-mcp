@@ -68,7 +68,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp -r src ghul-mcp.ghulproj .config "$tmp/"
+cp -r src ghul-mcp.ghulproj Directory.Build.props Directory.Packages.props .config "$tmp/"
 (cd "$tmp" && dotnet tool restore >/dev/null)
 cp "$tmp/src/main.ghul" "$tmp/main.pristine"
 
@@ -153,7 +153,7 @@ response 11 | grep -q 'length' || fail "members(StringBuilder): expected length 
 tmp2=$(mktemp -d)
 trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2"' EXIT
 
-cp -r src ghul-mcp.ghulproj .config "$tmp2/"
+cp -r src ghul-mcp.ghulproj Directory.Build.props Directory.Packages.props .config "$tmp2/"
 (cd "$tmp2" && dotnet tool restore >/dev/null)
 
 send '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
@@ -209,6 +209,7 @@ entry() is
 si
 EOF
 cp ghul-mcp.ghulproj "$hints_dir/hints-test.ghulproj"
+cp Directory.Build.props Directory.Packages.props "$hints_dir/"
 cp -r .config "$hints_dir/"
 (cd "$hints_dir" && dotnet tool restore >/dev/null)
 
