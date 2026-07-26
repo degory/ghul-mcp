@@ -10,12 +10,16 @@ Not loaded by local Claude Code; only the cloud reviewer reads this.
 
 ## What this repo is
 
-`ghul-mcp` is an MCP server exposing semantic queries against ghūl projects -
-diagnostics, hover, definition, references, implementations, symbol search - by
-driving the compiler's analysis mode over its IPC protocol. Written in ghūl,
-consuming the `ghul.analysis.protocol` client library. It keeps a pool of analyser
-sessions keyed by canonical project path, reaping least-recently-used entries above
-a cap.
+`ghul-mcp` is an MCP server exposing semantic queries against ghūl projects by
+driving the compiler's analysis mode over its IPC protocol. It advertises around
+sixteen tools — whole-project (`diagnostics`), file-scoped (`inlays`),
+position-based (`hover`, `definition`, `references`, `implementations`), the
+name-based `*_of` variants of those, `symbols`, `members`, and the session-management
+tools (`sessions`, `release_session`, `heap_check`, `version`). Read
+`src/analyser/tools.ghul` for the current set rather than trusting this list.
+Written in ghūl, consuming the `ghul.analysis.protocol` client library. It keeps a
+pool of analyser sessions keyed by canonical project path, reaping
+least-recently-used entries above a cap.
 
 Its consumers are AI coding agents, which cannot tell a wrong answer from a right
 one. A silently stale result is worse than an error, because the agent proceeds
@@ -37,5 +41,13 @@ confidently on it.
 
 ## Versioning
 
-Major means a removed or renamed tool, or a changed tool input schema that would
-break a caller; minor means new tools or new optional arguments.
+The consumer-visible contract is wider than the tool list, and this section is the
+only place that says so — the runtime notes defer to it for what counts as breaking
+here. It covers the tool names and their input schemas, the shape of what they
+return, the command-line invocation (`--default-project`, `--query-log` and the
+rest), and the MCP handshake itself.
+
+Major means breaking any of those: a removed or renamed tool, an input schema a
+caller no longer satisfies, a result shape a caller can no longer parse, or a
+changed or removed command-line flag. Minor means additions — new tools, new
+optional arguments, new flags.
