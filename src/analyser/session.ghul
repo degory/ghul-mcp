@@ -13,6 +13,7 @@ namespace Analyser is
     use IO.Directory;
     use IO.File;
     use IO.Path;
+    use IO.Std;
 
     use Analysis.Protocol.EDIT_FILE;
     use Analysis.Protocol.Request;
@@ -27,10 +28,10 @@ namespace Analyser is
     // A long-lived `dotnet ghul-compiler --analyse` session over one ghūl
     // project. Spawns the project's own pinned compiler tool in the project
     // directory, seeds it with the project's assembly references (from
-    // `.assemblies.json`, written at build time) and source contents (via
-    // edit requests), and re-sends any file whose on-disk timestamp moved
-    // before answering each query - so results always reflect what is on
-    // disk, not what was there at startup.
+    // `.assemblies.json`, regenerated on every spawn) and source contents
+    // (via edit requests), and re-sends any file whose on-disk timestamp
+    // moved before answering each query - so results always reflect what is
+    // on disk, not what was there at startup.
     class ANALYSER_SESSION: Disposable is
         _project_directory: string;
         _options: JsonSerializerOptions;
@@ -394,12 +395,30 @@ namespace Analyser is
         start() is
             let assemblies_json_path = Path.combine(_project_directory, ".assemblies.json");
 
-            if !File.exists(assemblies_json_path) then
-                generate_assemblies_json();
-            fi
+            // Unconditionally, not just when the file is absent: it is a
+            // build artifact of whatever the project's references resolved
+            // to the last time someone built, and nothing keeps it in step
+            // with a package bump afterwards. A stale one is worse than a
+            // missing one, because it spawns an analyser that looks healthy
+            // and answers wrongly - referencing a runtime older than the
+            // compiler needs leaves the intrinsics unregistered, so basic
+            // operators fail to resolve, the failure is swallowed per file,
+            // and every declaration past the first failure in a file
+            // reports its types as unresolved.
+            let regenerated = generate_assemblies_json();
 
             if !File.exists(assemblies_json_path) then
                 throw Exception("could not produce .assemblies.json in {_project_directory} - is this a ghūl project with its dotnet tools restored?");
+            fi
+
+            // Regeneration failed but a file is there, so it predates this
+            // spawn and may describe references the project no longer uses.
+            // Proceeding beats refusing to answer at all - a project whose
+            // reference resolution is broken is one someone plausibly wants
+            // to inspect - but generate_assemblies_json has already said so
+            // on stderr rather than letting it pass unremarked.
+            if !regenerated then
+                Std.error.write_line("ghul-mcp: continuing with the existing .assemblies.json in {_project_directory}");
             fi
 
             let assemblies_file = JsonSerializer.deserialize[ASSEMBLIES_FILE](File.read_all_text(assemblies_json_path), _options);
@@ -577,8 +596,11 @@ namespace Analyser is
         si
 
         // Ask MSBuild to write the project's reference-assembly list; the
-        // target ships in the ghūl runtime's build targets.
-        generate_assemblies_json() is
+        // target ships in the ghūl runtime's build targets. Returns whether
+        // it succeeded - the caller needs to know, because a failure here
+        // leaves whatever stale file was already on disk, which is exactly
+        // the state that produces confidently wrong analysis.
+        generate_assemblies_json() -> bool is
             let start_info = ProcessStartInfo();
 
             start_info.file_name = "dotnet";
@@ -591,11 +613,28 @@ namespace Analyser is
 
             let process = Process.start(start_info);
 
-            if process? then
-                process.standard_output.read_to_end();
-                process.standard_error.read_to_end();
-                process.wait_for_exit(120000);
+            if !process? then
+                return false;
             fi
+
+            process.standard_output.read_to_end();
+            let errors = process.standard_error.read_to_end();
+
+            if !process.wait_for_exit(120000) then
+                Std.error.write_line("ghul-mcp: timed out regenerating .assemblies.json in {_project_directory}");
+                return false;
+            fi
+
+            if process.exit_code != 0 then
+                Std.error.write_line(
+                    "ghul-mcp: could not regenerate .assemblies.json in {_project_directory} "
+                    "(dotnet build -t:GenerateAssembliesJson exited {process.exit_code}); "
+                    "analysis will use whatever reference list is already on disk\n{errors}"
+                );
+                return false;
+            fi
+
+            return true;
         si
 
         // Ensure the analyser subprocess is up, spawning a fresh one if not.
