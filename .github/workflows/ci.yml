@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # Serialize release builds so concurrent pushes to main can't race over the
 # version number or the latest-release pointer. PR builds keep their own
