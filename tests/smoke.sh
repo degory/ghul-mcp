@@ -276,4 +276,41 @@ grep -q '"tool":"hover"' "$qlog2" || fail "query log: hover entry"
 grep -q '"tool":"inlays"' "$qlog2" || fail "query log: inlays entries"
 grep -q '"status":"error"' "$qlog2" && fail "query log: unexpected error status"
 
+# --- part 6: diagnostics daemon ------------------------------------------
+# The Unix-socket front end a shell hook talks to instead of the MCP
+# protocol: EDIT-only diagnostics for one file, without the whole-project
+# Request.COMPILE() the `diagnostics` tool always pays.
+
+daemon_socket="$tmp/diag.sock"
+dotnet "$server" --diagnostics-daemon "$daemon_socket" --project "$tmp" >"$tmp/daemon.log" 2>&1 &
+daemon_pid=$!
+trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
+
+for _ in $(seq 1 40); do
+    [ -S "$daemon_socket" ] && break
+    sleep 0.25
+done
+[ -S "$daemon_socket" ] || fail "diagnostics daemon: socket never appeared"
+
+daemon_request() {
+    printf '%s\n%s\n' "$tmp" "$1" | nc -U -q 2 -w 15 "$daemon_socket"
+}
+
+resp=$(daemon_request "src/main.ghul" | sed '/^$/d')
+[ -z "$resp" ] || fail "diagnostics daemon: expected no diagnostics for a clean file, got: $resp"
+
+echo "this is not ghul" >> "$tmp/src/main.ghul"
+resp=$(daemon_request "src/main.ghul")
+echo "$resp" | grep -q "^1" || fail "diagnostics daemon: expected a severity-1 error after breaking main.ghul, got: $resp"
+
+cp "$tmp/main.pristine" "$tmp/src/main.ghul"
+resp=$(daemon_request "src/main.ghul" | sed '/^$/d')
+[ -z "$resp" ] || fail "diagnostics daemon: expected clean again after repair, got: $resp"
+
+resp=$(daemon_request "../../../../../../etc/passwd")
+echo "$resp" | grep -q "ERROR.*escapes the project directory" || fail "diagnostics daemon: expected a path-escape rejection, got: $resp"
+
+kill "$daemon_pid" 2>/dev/null || true
+wait "$daemon_pid" 2>/dev/null || true
+
 echo "smoke test passed"
