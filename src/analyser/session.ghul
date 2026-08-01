@@ -728,6 +728,36 @@ namespace Analyser is
             throw unexpected("diagnostics", response);
         si
 
+        // Cheap single-file diagnostics: catches up any other on-disk-changed
+        // files (mtime-gated, so normally a no-op), then re-sends `path`
+        // unconditionally as an EDIT so its full-resolution pass runs even
+        // when its own mtime hasn't moved since the last sync, and returns
+        // that EDIT's diagnostics response directly - never forces the
+        // whole-project Request.COMPILE() that compile_diagnostics always
+        // pays. Intended for a hook that fires on every edit, where the
+        // latency of a full compile isn't acceptable. Diagnostics for other
+        // files still come back too (EDIT reports the full known set, same
+        // as COMPILE) - callers that only want this file's rows should
+        // filter on Response.DIAGNOSTICS.diagnostics by path.
+        edit_diagnostics(path: string) -> Response.DIAGNOSTICS is
+            ensure_spawned();
+            sync_sources();
+
+            let absolute = Path.combine(_project_directory, path);
+            let contents = File.read_all_text(absolute);
+
+            let response = exchange(Request.EDIT(LIST([EDIT_FILE(path, contents)])));
+
+            _mtimes[path] = File.get_last_write_time_utc(absolute);
+
+            if let diagnostics: Response.DIAGNOSTICS = response then
+                maybe_heap_check();
+                return diagnostics;
+            fi
+
+            throw unexpected("edit_diagnostics", response);
+        si
+
         // Narrowing inlays for one file. The analyser only records inlays
         // for files in the open set during compile-expressions, so drive a
         // compile with `path` open (reusing the diagnostics path's open-set

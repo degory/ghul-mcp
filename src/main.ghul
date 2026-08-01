@@ -53,6 +53,7 @@ entry(arguments: string[]) is
 
     let default_project: string? mut = null;
     let query_log_path: string? mut = default_query_log_path();
+    let diagnostics_socket: string? mut = null;
 
     let index mut = 0;
 
@@ -68,11 +69,26 @@ entry(arguments: string[]) is
         elif arg =~ "--no-query-log" then
             query_log_path = null;
             index = index + 1;
+        elif arg =~ "--diagnostics-daemon" /\ index + 1 < arguments.count then
+            diagnostics_socket = arguments[index + 1];
+            index = index + 2;
         else
             Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arg}");
             index = index + 1;
         fi
     od
+
+    if let socket_path: string = diagnostics_socket then
+        let daemon_pool = Analyser.ANALYSER_POOL(default_project, max_sessions);
+
+        try
+            Analyser.DIAGNOSTICS_DAEMON.run(socket_path, daemon_pool);
+        finally
+            daemon_pool.dispose();
+        yrt
+
+        return;
+    fi
 
     let reader =
         IO.StreamReader(
