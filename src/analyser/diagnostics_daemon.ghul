@@ -12,6 +12,7 @@ namespace Analyser is
     use Analysis.Protocol.DIAGNOSTIC;
 
     use IO.File;
+    use IO.Path;
     use IO.StreamReader;
     use IO.StreamWriter;
     use IO.Std;
@@ -27,6 +28,13 @@ namespace Analyser is
     // warm, so a hook firing on every edit doesn't pay a cold analyser spawn
     // each time.
     class DIAGNOSTICS_DAEMON is
+        // Bound on how long a connection may sit idle mid-request. The
+        // accept loop is single-threaded, so a client that connects and
+        // never finishes writing its two header lines (a stalled or buggy
+        // hook invocation) would otherwise stall every other caller behind
+        // it indefinitely.
+        SOCKET_TIMEOUT_MS: int static => 10000;
+
         run(socket_path: string, pool: ANALYSER_POOL) static is
             if File.exists(socket_path) then
                 File.delete(socket_path);
@@ -60,6 +68,9 @@ namespace Analyser is
         si
 
         handle_connection(client: Socket, pool: ANALYSER_POOL) static is
+            client.receive_timeout = SOCKET_TIMEOUT_MS;
+            client.send_timeout = SOCKET_TIMEOUT_MS;
+
             let stream = NetworkStream(client, false);
             let encoding = UTF8Encoding(false);
 
@@ -73,6 +84,12 @@ namespace Analyser is
 
             if !project? \/ !path? \/ path.length == 0 then
                 writer.write_line("ERROR\tmissing project or path");
+                writer.write_line("");
+                return;
+            fi
+
+            if !is_within_project(project, path) then
+                writer.write_line("ERROR\tpath escapes the project directory");
                 writer.write_line("");
                 return;
             fi
@@ -96,6 +113,26 @@ namespace Analyser is
             yrt
 
             writer.write_line("");
+        si
+
+        // Rejects an absolute `path` (Path.combine ignores the base and
+        // returns it as-is) and a `../` escape, either of which would
+        // otherwise let any local caller on this socket read and EDIT an
+        // arbitrary file outside the project - this front end has no other
+        // access control, unlike the MCP tools, which are only reachable
+        // over the spawning process's own stdio.
+        is_within_project(project_directory: string, path: string) -> bool static is
+            let root = Path.get_full_path(project_directory);
+            let resolved = Path.get_full_path(Path.combine(root, path));
+
+            let root_with_separator =
+                if root.ends_with(Path.directory_separator_char) then
+                    root
+                else
+                    "{root}{Path.directory_separator_char}"
+                fi;
+
+            return resolved.starts_with(root_with_separator);
         si
     si
 si

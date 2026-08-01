@@ -293,27 +293,7 @@ done
 [ -S "$daemon_socket" ] || fail "diagnostics daemon: socket never appeared"
 
 daemon_request() {
-    python3 - "$daemon_socket" "$tmp" "$1" <<'PYEOF'
-import socket
-import sys
-
-sock_path, project_dir, relative_path = sys.argv[1], sys.argv[2], sys.argv[3]
-
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.settimeout(15)
-s.connect(sock_path)
-s.sendall((project_dir + "\n" + relative_path + "\n").encode("utf-8"))
-s.shutdown(socket.SHUT_WR)
-
-data = b""
-while True:
-    chunk = s.recv(4096)
-    if not chunk:
-        break
-    data += chunk
-
-sys.stdout.write(data.decode("utf-8"))
-PYEOF
+    printf '%s\n%s\n' "$tmp" "$1" | nc -U -q 2 -w 15 "$daemon_socket"
 }
 
 resp=$(daemon_request "src/main.ghul" | sed '/^$/d')
@@ -326,6 +306,9 @@ echo "$resp" | grep -q "^1" || fail "diagnostics daemon: expected a severity-1 e
 cp "$tmp/main.pristine" "$tmp/src/main.ghul"
 resp=$(daemon_request "src/main.ghul" | sed '/^$/d')
 [ -z "$resp" ] || fail "diagnostics daemon: expected clean again after repair, got: $resp"
+
+resp=$(daemon_request "../../../../../../etc/passwd")
+echo "$resp" | grep -q "ERROR.*escapes the project directory" || fail "diagnostics daemon: expected a path-escape rejection, got: $resp"
 
 kill "$daemon_pid" 2>/dev/null || true
 wait "$daemon_pid" 2>/dev/null || true
