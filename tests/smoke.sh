@@ -182,6 +182,48 @@ send "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"nam
 await 24
 response 24 | grep -q 'main.ghul' || fail "2nd diagnostics: expected broken main.ghul"
 
+# --- part 3b: an analyser that exits is replaced without the caller knowing --
+# The compiler exits on its own once it has been idle for a while, so a warm
+# session's process can be gone by the time the next query arrives. Killing it
+# is that case, arriving sooner. The pool must notice and respawn rather than
+# write to a dead pipe, and the replacement must be told about every source —
+# a fresh analyser knows nothing, so a session that only re-sent what had
+# changed since the last query would answer against an empty project.
+
+send '{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
+await 50
+# Two projects are warm by now, so match the default project's own line
+# rather than whichever the pool happened to render first.
+analyser_pid=$(response 50 | grep -o "$tmp (pid [0-9]*" | grep -o '[0-9]*$')
+[ -n "$analyser_pid" ] || fail "sessions: no analyser pid to kill"
+
+
+kill -9 "$analyser_pid" 2>/dev/null || fail "could not kill analyser pid $analyser_pid"
+
+for _ in $(seq 1 50); do
+    kill -0 "$analyser_pid" 2>/dev/null || break
+    sleep 0.1
+done
+
+kill -0 "$analyser_pid" 2>/dev/null && fail "analyser pid $analyser_pid did not die"
+
+# A question only an analyser that has been given the project can answer. A
+# clean diagnostics run would not do: an analyser holding no sources at all
+# reports no errors either, so it passes whether or not the respawn re-sent
+# anything. Neither would the session's own source count, which is its
+# bookkeeping rather than evidence about the process it is talking to.
+send '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"symbols","arguments":{"query":"ensure_fresh"}}}'
+await 51
+response 51 | grep -q 'session.ghul' \
+    || fail "symbols after analyser death: expected a transparent respawn with the whole project re-sent"
+
+send '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
+await 52
+new_pid=$(response 52 | grep -o "$tmp (pid [0-9]*" | grep -o '[0-9]*$')
+[ -n "$new_pid" ] || fail "sessions after respawn: expected a live analyser"
+
+[ "$new_pid" != "$analyser_pid" ] || fail "sessions after respawn: pid unchanged, so nothing respawned"
+
 # --- part 4: inlays -----------------------------------------------------
 # The narrowing / flow information the editor shows inline is surfaced by the
 # file-scoped `inlays` tool. The fixture narrows a local under a presence
