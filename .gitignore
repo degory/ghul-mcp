@@ -4,3 +4,5 @@ nupkg/
 publish/
 *.user
 .assemblies.json
+.analysis.rsp
+.ghul-mcp-*.rsp

@@ -65,6 +65,32 @@ Registering with Claude Code:
 claude mcp add ghul -- dotnet ghul-mcp --default-project <project-dir>
 ```
 
+## Diagnostics daemon
+
+An alternative front end for callers that are shell scripts rather than MCP
+clients. It serves diagnostics for a single file over a Unix socket, backed by
+the same warm analyser pool the MCP server uses, so a script firing on every
+edit doesn't pay a cold analyser spawn each time:
+
+```sh
+dotnet ghul-mcp --diagnostics-daemon /tmp/ghul-diag.sock --project path/to/project
+```
+
+One request per connection: two lines in (project directory, then a file path
+relative to it), one line per diagnostic back, then a blank line.
+
+The daemon exits once it has gone `--diagnostics-daemon-idle-timeout` seconds
+without a connection (default 1800; `0` waits indefinitely), unlinking its
+socket on the way out. A warm pool holds an analyser per project, so one left
+over from an editing session that ended hours ago costs hundreds of megabytes
+to answer nothing.
+
+A caller decides whether to launch a daemon by connecting, not by testing
+whether the socket file exists. A daemon killed outright cannot unlink its
+socket, and the file it leaves behind is indistinguishable from a live one;
+treating existence as proof of life leaves diagnostics dead until the file is
+removed by hand. On a refused connection, unlink the socket and relaunch.
+
 ## Query log
 
 The server appends one JSON line per `tools/call` dispatch to a query log:
