@@ -5,6 +5,7 @@ namespace Analyser is
     use System.Net.Sockets.AddressFamily;
     use System.Net.Sockets.NetworkStream;
     use System.Net.Sockets.ProtocolType;
+    use System.Net.Sockets.SelectMode;
     use System.Net.Sockets.Socket;
     use System.Net.Sockets.SocketType;
     use System.Net.Sockets.UnixDomainSocketEndPoint;
@@ -35,7 +36,20 @@ namespace Analyser is
         // it indefinitely.
         SOCKET_TIMEOUT_MS: int static => 10000;
 
-        run(socket_path: string, pool: ANALYSER_POOL) static is
+        // How long the daemon waits for a connection before giving up and
+        // exiting. It holds a pool of warm analysers, so an editing session
+        // that ended hours ago otherwise costs hundreds of megabytes to
+        // answer nothing - the same trade the analyser's own idle timeout
+        // makes, and the same default. The spawning hook relaunches on
+        // demand, so the only cost of exiting early is one cold pool.
+        DEFAULT_IDLE_TIMEOUT_SECONDS: int static => 1800;
+
+        // Granularity of the wait. The accept loop cannot block indefinitely
+        // and still notice the timeout, so it polls in chunks; the wakeups
+        // are far too cheap to register against the process's CPU time.
+        POLL_CHUNK_SECONDS: int static => 5;
+
+        run(socket_path: string, pool: ANALYSER_POOL, idle_timeout_seconds: int) static is
             if File.exists(socket_path) then
                 File.delete(socket_path);
             fi
@@ -47,8 +61,35 @@ namespace Analyser is
 
             Std.error.write_line("ghul-mcp: diagnostics daemon listening on {socket_path}");
 
+            // A disabled timeout waits indefinitely, which is what Poll does
+            // with a negative timeout.
+            let poll_microseconds =
+                if idle_timeout_seconds <= 0 then
+                    -1
+                else
+                    POLL_CHUNK_SECONDS * 1000000
+                fi;
+
             try
+                let idle_seconds mut = 0;
+
                 do
+                    if !listener.poll(poll_microseconds, SelectMode.SELECT_READ) then
+                        idle_seconds = idle_seconds + POLL_CHUNK_SECONDS;
+
+                        if idle_timeout_seconds > 0 /\ idle_seconds >= idle_timeout_seconds then
+                            Std.error.write_line(
+                                "ghul-mcp: diagnostics daemon exiting after {idle_timeout_seconds}s idle"
+                            );
+
+                            break;
+                        fi
+
+                        continue;
+                    fi
+
+                    idle_seconds = 0;
+
                     let client = listener.accept();
 
                     try
@@ -60,6 +101,8 @@ namespace Analyser is
                     yrt
                 od
             finally
+                listener.close();
+
                 try
                     File.delete(socket_path);
                 catch ex: Exception

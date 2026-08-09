@@ -54,6 +54,7 @@ entry(arguments: string[]) is
     let default_project: string? mut = null;
     let query_log_path: string? mut = default_query_log_path();
     let diagnostics_socket: string? mut = null;
+    let diagnostics_idle_timeout mut = Analyser.DIAGNOSTICS_DAEMON.DEFAULT_IDLE_TIMEOUT_SECONDS;
 
     let index mut = 0;
 
@@ -72,6 +73,18 @@ entry(arguments: string[]) is
         elif arg =~ "--diagnostics-daemon" /\ index + 1 < arguments.count then
             diagnostics_socket = arguments[index + 1];
             index = index + 2;
+        elif arg =~ "--diagnostics-daemon-idle-timeout" /\ index + 1 < arguments.count then
+            let seconds_string = arguments[index + 1];
+
+            try
+                diagnostics_idle_timeout = int.parse(seconds_string);
+            catch ex: System.Exception
+                Std.error.write_line(
+                    "ghul-mcp: ignoring garbled --diagnostics-daemon-idle-timeout value: {seconds_string}"
+                );
+            yrt
+
+            index = index + 2;
         else
             Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arg}");
             index = index + 1;
@@ -82,7 +95,7 @@ entry(arguments: string[]) is
         let daemon_pool = Analyser.ANALYSER_POOL(default_project, max_sessions);
 
         try
-            Analyser.DIAGNOSTICS_DAEMON.run(socket_path, daemon_pool);
+            Analyser.DIAGNOSTICS_DAEMON.run(socket_path, daemon_pool, diagnostics_idle_timeout);
         finally
             daemon_pool.dispose();
         yrt
