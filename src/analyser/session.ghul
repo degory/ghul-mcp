@@ -183,7 +183,7 @@ namespace Analyser is
                     if include_attr? then
                         let value = include_attr.value;
 
-                        if value? /\ value.length > 0 then
+                        if value.length > 0 then
                             result.add(value);
                         fi
                     fi
@@ -254,10 +254,6 @@ namespace Analyser is
         // Split a command fragment on runs of whitespace, dropping empties.
         _tokenize(text: string) -> LIST[string] is
             let result = LIST[string]();
-
-            if !text? then
-                return result;
-            fi
 
             let current = StringBuilder();
 
@@ -423,9 +419,13 @@ namespace Analyser is
 
             let assemblies_file = JsonSerializer.deserialize[ASSEMBLIES_FILE](File.read_all_text(assemblies_json_path), _options);
 
-            if !assemblies_file? \/ !assemblies_file.assemblies? then
-                throw Exception("could not read an assemblies list from {assemblies_json_path}");
-            fi
+            // JsonSerializer.deserialize bypasses ASSEMBLIES_FILE's init(),
+            // assigning fields by reflection - so a missing or null
+            // "assemblies" key in the JSON leaves this non-optional
+            // LIST[string] null at runtime despite its static type. The
+            // presence test is deliberate, not redundant, hence the assert.
+            assert assemblies_file? /\ assemblies_file.assemblies? else
+                Exception("could not read an assemblies list from {assemblies_json_path}");
 
             let arguments = LIST[string]();
 
@@ -516,12 +516,16 @@ namespace Analyser is
         // client raises here is a lot clearer than the wire-level hang
         // that a version mismatch otherwise causes.
         //
-        // Held at 20.3.0 because that's the first version answering the
-        // INLAY_HINTS query the `inlays` tool depends on (ghul#1642).
-        // Older analysers also predate compiler_version on the LISTEN
-        // frame (ghul#1634, 19.13.0), which we treat as "too old to
-        // negotiate" and refuse to talk to.
-        MIN_COMPILER_VERSION: string static => "20.3.0";
+        // The floor is the pinned ghul.compiler in .config/dotnet-tools.json:
+        // that is the only client/analyser pair the smoke test exercises, so
+        // it is the oldest analyser this build is verified against. When a
+        // pin bump moves the compiler or ghul.analysis.protocol, move this
+        // with it. A floor older than the pins claims compatibility nobody
+        // has tested. (Historically 20.3.0, the first version answering the
+        // INLAY_HINTS query the `inlays` tool depends on, ghul#1642; any
+        // analyser predating compiler_version on the LISTEN frame, ghul#1634
+        // / 19.13.0, is "too old to negotiate" and refused.)
+        MIN_COMPILER_VERSION: string static => "30.2.3";
 
         _reject_if_compiler_too_old(reported: string?) is
             if !reported? \/ reported.length == 0 then
@@ -657,7 +661,7 @@ namespace Analyser is
                 let absolute = Path.combine(_project_directory, path);
                 let stamp = File.get_last_write_time_utc(absolute);
 
-                if !_mtimes.contains_key(path) \/ _mtimes[path] != stamp then
+                if !_mtimes.contains_key(path) \/ _mtimes[path] !~ stamp then
                     changed.add(EDIT_FILE(path, File.read_all_text(absolute)));
                     _mtimes[path] = stamp;
                 fi
@@ -692,7 +696,7 @@ namespace Analyser is
             let open_paths = LIST[string]();
 
             for p in hints_for do
-                if p? /\ p.length > 0 then
+                if p.length > 0 then
                     open_paths.add(p);
                 fi
             od
@@ -978,14 +982,14 @@ namespace Analyser is
                 throw e;
             fi
 
-            if !response? then
-                throw Exception(
-                    "read_response task completed without a response and without an exception "
-                    "against {_project_directory} - internal invariant violation"
-                );
+            if let result: Response = response then
+                return result;
             fi
 
-            return response!;
+            throw Exception(
+                "read_response task completed without a response and without an exception "
+                "against {_project_directory} - internal invariant violation"
+            );
         si
 
         // One JSON object per line; read characters to the newline and

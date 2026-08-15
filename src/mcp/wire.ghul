@@ -33,7 +33,7 @@ namespace MCP is
     // escapes them inside strings), so read_line is a complete framing
     // primitive.
     class WIRE is
-        _options: JsonSerializerOptions static;
+        _options: JsonSerializerOptions? static;
 
         options: JsonSerializerOptions static is
             if !_options? then

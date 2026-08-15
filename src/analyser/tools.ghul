@@ -595,7 +595,7 @@ namespace Analyser is
             return "(uncoded)";
         si
 
-        _compare_diagnostics(a: DIAGNOSTIC, b: DIAGNOSTIC) -> int static is
+        _compare_diagnostics(a: DIAGNOSTIC, b: DIAGNOSTIC) -> int static pure is
             if a.severity != b.severity then
                 return a.severity - b.severity;
             fi
@@ -617,7 +617,7 @@ namespace Analyser is
             let set = Collections.SET[string]();
 
             for value in values do
-                if value? /\ value.length > 0 then
+                if value.length > 0 then
                     set.add(value.to_lower_invariant());
                 fi
             od

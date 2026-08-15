@@ -47,6 +47,12 @@ namespace MCP is
             od
         si
 
+        // REQUEST is populated via JsonSerializer.deserialize, which bypasses
+        // init() and assigns fields by reflection - so a JSON-RPC request
+        // that omits "method" (or sends it null) leaves this non-optional
+        // string null at runtime despite its static type. The presence test
+        // below is deliberate, not redundant.
+        @suppress("presence-test-non-optional")
         handle(request: REQUEST) is
             let method = request.method;
 
