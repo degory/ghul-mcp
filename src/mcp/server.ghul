@@ -50,9 +50,7 @@ namespace MCP is
         handle(request: REQUEST) is
             let method = request.method;
 
-            if !method? then
-                reply_error(request, -32600, "invalid request: no method");
-            elif method =~ "initialize" then
+            if method =~ "initialize" then
                 reply(request, INITIALIZE_RESULT(PROTOCOL_VERSION, SERVER_INFO(name, version)));
             elif method =~ "ping" then
                 reply(request, EMPTY());
