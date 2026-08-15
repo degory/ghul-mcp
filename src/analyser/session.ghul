@@ -419,9 +419,13 @@ namespace Analyser is
 
             let assemblies_file = JsonSerializer.deserialize[ASSEMBLIES_FILE](File.read_all_text(assemblies_json_path), _options);
 
-            if !assemblies_file? then
-                throw Exception("could not read an assemblies list from {assemblies_json_path}");
-            fi
+            // JsonSerializer.deserialize bypasses ASSEMBLIES_FILE's init(),
+            // assigning fields by reflection - so a missing or null
+            // "assemblies" key in the JSON leaves this non-optional
+            // LIST[string] null at runtime despite its static type. The
+            // presence test is deliberate, not redundant, hence the assert.
+            assert assemblies_file? /\ assemblies_file.assemblies? else
+                Exception("could not read an assemblies list from {assemblies_json_path}");
 
             let arguments = LIST[string]();
 
