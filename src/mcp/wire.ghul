@@ -176,6 +176,9 @@ namespace MCP is
         method: string public;
         params: JsonElement public;
 
+        // JsonSerializer.deserialize bypasses this and assigns the fields by
+        // reflection.
+        @suppress("field-definite-assignment")
         init() is si
 
         is_notification: bool => id.value_kind == JsonValueKind.UNDEFINED;

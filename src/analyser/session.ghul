@@ -22,6 +22,22 @@ namespace Analyser is
     class ASSEMBLIES_FILE is
         assemblies: LIST[string] public;
 
+        // JsonSerializer.deserialize bypasses this and assigns the field by
+        // reflection.
+        @suppress("field-definite-assignment")
+        init() is si
+    si
+
+    // Shape of .ghul-options.json, written by the ghul.runtime 14.1.0+
+    // GenerateGhulOptionsJson target: the fully-resolved compiler flags the
+    // build itself would pass, as one whitespace-separated (quote-aware)
+    // string - conditions applied, properties evaluated. See degory/ghul#2090.
+    class GHUL_OPTIONS_FILE is
+        options: string public;
+
+        // JsonSerializer.deserialize bypasses this and assigns the field by
+        // reflection.
+        @suppress("field-definite-assignment")
         init() is si
     si
 
@@ -195,13 +211,115 @@ namespace Analyser is
             yrt
         si
 
+        // Resolve the compiler options the command-line build passes but the
+        // analyser otherwise wouldn't (e.g. `--underscore-access legacy`,
+        // `--warn-as-hint <slug>`). Prefers .ghul-options.json, regenerated on
+        // every spawn the same way .assemblies.json is: that file is written
+        // by MSBuild itself, post-Condition and post-property-evaluation, so
+        // it sees things the hand-rolled XML parse below cannot - a Condition
+        // on the enclosing ItemGroup, GhulOptions in property form, a $(...)
+        // reference. Falls back to load_ghulproj_compiler_options when the
+        // file never appears, which is the normal case for a project still
+        // pinned to a ghul.runtime older than 14.1.0 (no
+        // GenerateGhulOptionsJson target to run).
+        resolve_compiler_options() -> LIST[string] is
+            let options_json_path = Path.combine(_project_directory, ".ghul-options.json");
+
+            generate_ghul_options_json();
+
+            if File.exists(options_json_path) then
+                try
+                    let options_file = JsonSerializer.deserialize[GHUL_OPTIONS_FILE](File.read_all_text(options_json_path), _options);
+
+                    assert options_file? /\ options_file.options? else
+                        Exception("could not read the options field from {options_json_path}");
+
+                    return _tokenize_quoted(options_file.options);
+                catch ex: Exception
+                    Std.error.write_line(
+                        "ghul-mcp: could not read {options_json_path} ({ex.message}); "
+                        "falling back to hand-parsed .ghulproj options"
+                    );
+                yrt
+            fi
+
+            return load_ghulproj_compiler_options();
+        si
+
+        // Ask MSBuild to write the project's fully-resolved compiler flags to
+        // .ghul-options.json; the target ships in ghul.runtime 14.1.0+'s
+        // build targets (degory/ghul#2090). Best-effort and silent on
+        // failure: a project still pinned to an older ghul.runtime has no
+        // such target, and that is the normal case rather than a problem to
+        // report - resolve_compiler_options falls back to the hand-rolled
+        // parse when the file never appears.
+        generate_ghul_options_json() is
+            let start_info = ProcessStartInfo();
+
+            start_info.file_name = "dotnet";
+            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulOptionsJson";
+            start_info.working_directory = _project_directory;
+
+            start_info.use_shell_execute = false;
+            start_info.redirect_standard_output = true;
+            start_info.redirect_standard_error = true;
+
+            let process = Process.start(start_info);
+
+            if !process? then
+                return;
+            fi
+
+            process.standard_output.read_to_end();
+            process.standard_error.read_to_end();
+
+            process.wait_for_exit(120000);
+        si
+
+        // Split a flag string on runs of whitespace, treating a
+        // double-quoted run as part of the surrounding token with the quote
+        // characters themselves dropped - so `--suppress "a,b"` tokenizes as
+        // (`--suppress`, `a,b`) rather than three pieces. The build always
+        // emits balanced double quotes around any value that could contain
+        // whitespace, so no backslash-escaping support is needed here.
+        _tokenize_quoted(text: string) -> LIST[string] is
+            let result = LIST[string]();
+            let current = StringBuilder();
+            let in_quotes mut = false;
+            let has_token mut = false;
+
+            for c in text do
+                if c == '"' then
+                    in_quotes = !in_quotes;
+                    has_token = true;
+                elif !in_quotes /\ (c == ' ' \/ c == '\t' \/ c == '\n' \/ c == '\r') then
+                    if has_token then
+                        result.add(current.to_string());
+                        current.clear();
+                        has_token = false;
+                    fi
+                else
+                    current.append(c);
+                    has_token = true;
+                fi
+            od
+
+            if has_token then
+                result.add(current.to_string());
+            fi
+
+            return result;
+        si
+
         // Parse the single .ghulproj and return the compiler options the
         // command-line build passes but the analyser otherwise wouldn't:
         // the flags after `ghul-compiler` in `<GhulCompiler>` (e.g.
         // `--underscore-access legacy`) plus every `<GhulOptions Include="…" />`
         // that carries no `Condition` (e.g. `--warn-as-hint <slug>`).
         // Condition-guarded options are skipped so the analyser tracks a local
-        // build, not a CI build. Empty on any read failure.
+        // build, not a CI build. Empty on any read failure. Fallback for a
+        // project referencing a ghul.runtime older than 14.1.0 - see
+        // resolve_compiler_options.
         load_ghulproj_compiler_options() -> LIST[string] is
             let result = LIST[string]();
 
@@ -439,7 +557,7 @@ namespace Analyser is
             // compiler's legacy cross-class `_`-member accesses report as
             // inaccessible; without `--warn-as-hint <slug>` demoted warnings
             // come back as full warnings.
-            for option in load_ghulproj_compiler_options() do
+            for option in resolve_compiler_options() do
                 arguments.add(option);
             od
 
