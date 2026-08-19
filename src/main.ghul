@@ -1,6 +1,6 @@
 use IO.Std;
 
-server_version: string => "0.10.0";
+server_version: string => "1.0.0";
 
 // The server version plus, when the default project has a warm analyser
 // session, the compiler version it advertised at spawn. Sessions for other
