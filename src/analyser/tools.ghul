@@ -80,10 +80,34 @@ namespace Analyser is
             "{PROJECT_PROPERTY}"
             "}}}}";
 
-        // Resolve the analyser session for this tool call. Every tool that
-        // touches the analyser goes through here.
-        session_from(pool: ANALYSER_POOL, arguments: JsonElement) -> ANALYSER_SESSION static =>
-            pool.get_session(WIRE.try_get_string(arguments, "project"));
+        // Route a tool call through the pool and stamp the result with the
+        // project and compiler that answered it. The stamp is the defence
+        // against the quiet failure mode of multi-project routing: a call
+        // that forgot `project` is answered by the default project, and a
+        // warm session keeps answering on a compiler pin that has since
+        // been bumped - without the stamp, nothing in the result betrays
+        // either.
+        with_session(
+            pool: ANALYSER_POOL,
+            arguments: JsonElement,
+            run: (ANALYSER_SESSION, JsonElement) -> string
+        ) -> string static is
+            let session = pool.get_session(WIRE.try_get_string(arguments, "project"));
+            let result = run(session, arguments);
+
+            // Read the version after `run`, not before: the session spawns
+            // lazily on its first query, so the LISTEN frame carrying the
+            // compiler version has only been seen by then.
+            let compiler = session.compiler_version;
+            let compiler_text =
+                if compiler? then
+                    "ghul.compiler {compiler}"
+                else
+                    "ghul.compiler version unknown"
+                fi;
+
+            return "[{session.project_directory} · {compiler_text}]\n{result}";
+        si
 
         register(server: SERVER, pool: ANALYSER_POOL) static is
             server.add_tool(
@@ -91,7 +115,7 @@ namespace Analyser is
                     "diagnostics",
                     "compile the ghūl project and report errors and warnings. Large result sets come back as a summary (counts by severity, a by-code and top-files breakdown, every error in full); filter with `file`, `severity`, `code`, or `exclude_codes` to see individual warnings. For narrowing / flow annotations, use the `inlays` tool",
                     DIAGNOSTICS_SCHEMA,
-                    arguments => run_diagnostics(session_from(pool, arguments), arguments)
+                    arguments => with_session(pool, arguments, run_diagnostics)
                 )
             );
 
@@ -100,7 +124,7 @@ namespace Analyser is
                     "inlays",
                     "narrowing / flow inlays for one file, as the editor would show them inline: where a value is narrowed (to a variant, to non-null, to an isa-type) and where a narrowing is killed. File-scoped. Use to see why a value is or isn't narrowed at a point",
                     INLAY_SCHEMA,
-                    arguments => run_inlays(session_from(pool, arguments), arguments)
+                    arguments => with_session(pool, arguments, run_inlays)
                 )
             );
 
@@ -109,7 +133,7 @@ namespace Analyser is
                     "hover",
                     "signature and kind of the symbol at a position, as the IDE hover would show it",
                     POSITION_SCHEMA,
-                    arguments => run_hover(session_from(pool, arguments), arguments)
+                    arguments => with_session(pool, arguments, run_hover)
                 )
             );
 
@@ -118,7 +142,7 @@ namespace Analyser is
                     "definition",
                     "location where the symbol at a position is defined",
                     POSITION_SCHEMA,
-                    arguments => run_position_locations(session_from(pool, arguments), arguments, "definition")
+                    arguments => with_session(pool, arguments, (session, args) => run_position_locations(session, args, "definition"))
                 )
             );
 
@@ -127,7 +151,7 @@ namespace Analyser is
                     "references",
                     "all locations that reference the symbol at a position",
                     POSITION_SCHEMA,
-                    arguments => run_position_locations(session_from(pool, arguments), arguments, "references")
+                    arguments => with_session(pool, arguments, (session, args) => run_position_locations(session, args, "references"))
                 )
             );
 
@@ -136,7 +160,7 @@ namespace Analyser is
                     "implementations",
                     "locations implementing the trait member or overriding the method at a position",
                     POSITION_SCHEMA,
-                    arguments => run_position_locations(session_from(pool, arguments), arguments, "implementations")
+                    arguments => with_session(pool, arguments, (session, args) => run_position_locations(session, args, "implementations"))
                 )
             );
 
@@ -145,7 +169,7 @@ namespace Analyser is
                     "symbols",
                     "search symbol declarations across the project by substring; empty query lists every symbol",
                     QUERY_SCHEMA,
-                    arguments => run_symbols(session_from(pool, arguments), arguments)
+                    arguments => with_session(pool, arguments, run_symbols)
                 )
             );
 
@@ -154,7 +178,7 @@ namespace Analyser is
                     "hover_of",
                     "signature and kind of a symbol looked up by name (case-insensitive); returns the candidate list when multiple symbols share the name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session_from(pool, arguments), arguments, "hover")
+                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "hover"))
                 )
             );
 
@@ -163,7 +187,7 @@ namespace Analyser is
                     "definition_of",
                     "declaration location of a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session_from(pool, arguments), arguments, "definition")
+                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "definition"))
                 )
             );
 
@@ -172,7 +196,7 @@ namespace Analyser is
                     "references_of",
                     "all references to a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session_from(pool, arguments), arguments, "references")
+                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "references"))
                 )
             );
 
@@ -181,7 +205,7 @@ namespace Analyser is
                     "implementations_of",
                     "trait implementations or method overrides for a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => run_by_name(session_from(pool, arguments), arguments, "implementations")
+                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "implementations"))
                 )
             );
 
@@ -190,7 +214,7 @@ namespace Analyser is
                     "members",
                     "list the members of a type: fields, properties, methods, plus inherited members and (for a union) its variants. Works for ghūl-declared and imported types; pass the type as it would appear in ghūl source",
                     TYPE_SCHEMA,
-                    arguments => run_members(session_from(pool, arguments), arguments)
+                    arguments => with_session(pool, arguments, run_members)
                 )
             );
 

@@ -655,6 +655,16 @@ namespace Analyser is
                 );
             fi
 
+            // A 0.0.0-* version is a local dev pack (`dotnet pack
+            // -p:Version=0.0.0-local-<slug>.1` installed into the project's
+            // manifest), built from current source, so its protocol is at
+            // least as new as any published floor and the numeric triple
+            // says nothing. Testing an unpublished compiler is exactly when
+            // diagnostics are wanted, so exempt rather than refuse it.
+            if reported.starts_with("0.0.0-") then
+                return;
+            fi
+
             if compare_versions(reported, MIN_COMPILER_VERSION) < 0 then
                 throw Exception(
                     "analyser at {_project_directory} is ghul.compiler {reported}, "
