@@ -35,10 +35,19 @@ Tools:
 
 All lines and columns are 1-based, matching compiler diagnostics.
 
+Every analyser-backed result starts with a context line naming the project
+directory and the `ghul.compiler` version that answered, so a query routed
+to the wrong project - or served by a session warmed on a superseded pin -
+is visible in the result itself.
+
 The server drives the target project's own pinned `ghul.compiler` tool in
 analysis mode, seeds it with the project's assembly references and source
 contents, and re-sends any file whose on-disk timestamp moved before
-answering each query - results always reflect what is on disk.
+answering each query - results always reflect what is on disk. A locally
+packed dev compiler (`0.0.0-*`, from
+`dotnet pack -p:Version=0.0.0-local-<slug>.1` installed into the project's
+manifest) is accepted regardless of the minimum version - it is built from
+current source, so its analysis protocol is current too.
 
 ## Install as a .NET tool
 

@@ -39,7 +39,7 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 0.9.0 (no analyser session warm' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 1.0.0 (no analyser session warm' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
@@ -97,7 +97,8 @@ await 1
 
 send '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
 await 2
-response 2 | grep -q '"text":"no errors or warnings"' || fail "diagnostics: expected clean project"
+response 2 | grep -q 'no errors or warnings' || fail "diagnostics: expected clean project"
+response 2 | grep -q "\\[$tmp " || fail "diagnostics: expected the project stamp on the result"
 
 # Break a source on disk mid-session: the next query must see it.
 echo "this is not ghul" >> "$tmp/src/main.ghul"
@@ -112,7 +113,7 @@ cp "$tmp/main.pristine" "$tmp/src/main.ghul"
 
 send '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
 await 4
-response 4 | grep -q '"text":"no errors or warnings"' || fail "diagnostics after repair: expected clean again"
+response 4 | grep -q 'no errors or warnings' || fail "diagnostics after repair: expected clean again"
 
 line=$(grep -n "class ANALYSER_SESSION" src/analyser/session.ghul | head -1 | cut -d: -f1)
 send '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"hover","arguments":{"file":"src/analyser/session.ghul","line":'"$line"',"column":11}}}'
@@ -163,7 +164,8 @@ response 20 | grep -q "$tmp2" && fail "sessions: second project should NOT be wa
 
 send "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$tmp2\"}}}"
 await 21
-response 21 | grep -q '"text":"no errors or warnings"' || fail "diagnostics: expected clean second project"
+response 21 | grep -q 'no errors or warnings' || fail "diagnostics: expected clean second project"
+response 21 | grep -q "\\[$tmp2 " || fail "diagnostics: stamp should name the project argument, not the default"
 
 send '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
 await 22
@@ -176,7 +178,8 @@ echo "this is not ghul" >> "$tmp2/src/main.ghul"
 
 send '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"diagnostics","arguments":{}}}'
 await 23
-response 23 | grep -q '"text":"no errors or warnings"' || fail "default diagnostics after 2nd broken: still clean"
+response 23 | grep -q 'no errors or warnings' || fail "default diagnostics after 2nd broken: still clean"
+response 23 | grep -q "\\[$tmp " || fail "default diagnostics after 2nd broken: stamp should still name the default project"
 
 send "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$tmp2\"}}}"
 await 24
@@ -258,7 +261,7 @@ cp -r .config "$hints_dir/"
 # baseline: the project compiles clean (inlays are not diagnostics)
 send "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"project\":\"$hints_dir\"}}}"
 await 30
-response 30 | grep -q '"text":"no errors or warnings"' || fail "inlays: baseline diagnostics should be clean"
+response 30 | grep -q 'no errors or warnings' || fail "inlays: baseline diagnostics should be clean"
 
 # the inlays tool surfaces both narrowing sites for the file
 send "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"inlays\",\"arguments\":{\"project\":\"$hints_dir\",\"file\":\"src/test.ghul\"}}}"
