@@ -606,7 +606,31 @@ namespace Analyser is
                     ""
                 fi;
 
-            return "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}{suffix}";
+            let s mut =
+                "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}{suffix}";
+
+            // Other locations the diagnostic points at - a prior
+            // declaration, the call that invalidated a narrowing, or
+            // advice carried out of the message prose. One sitting on the
+            // diagnostic's own position is not somewhere to go and look,
+            // so only its message is rendered.
+            if let related = diagnostic.related then
+                for r in related do
+                    let l = r.location;
+
+                    if
+                        l.file =~ diagnostic.path /\
+                        l.start_line == diagnostic.start_line /\
+                        l.start_column == diagnostic.start_column
+                    then
+                        s = "{s} [{r.message}]";
+                    else
+                        s = "{s} [{r.message}: {l.file}:{l.start_line}:{l.start_column}]";
+                    fi
+                od
+            fi
+
+            return s;
         si
 
         _code_key(diagnostic: DIAGNOSTIC) -> string static is
