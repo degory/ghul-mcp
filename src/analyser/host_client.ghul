@@ -303,15 +303,28 @@ namespace Analyser is
 
             let start_info = ProcessStartInfo();
 
+            // The variable parts - the assembly, socket and project paths -
+            // travel as positional arguments ($0..$4), never interpolated
+            // into the script text, so a project path containing shell
+            // metacharacters cannot escape it; ProcessStartInfo's argument
+            // list is a real argv, so spaces need no quoting either. The
+            // shell exists for the detach (setsid, so the host outlives the
+            // front end whose spawn started it) and the log redirection
+            // (the front end's stdout carries protocol JSON and must stay
+            // clean).
             start_info.file_name = "/bin/sh";
-            // Redirected to a log file rather than inherited streams: the
-            // front end's stdout carries protocol JSON, and a redirected
-            // pipe nobody drains would eventually block the host on its own
-            // banners.
-            start_info.arguments =
-                "-c \"exec dotnet '{assembly_location}' --pool-host '{socket_path}' "
-                "--project '{project}' --pool-host-idle-timeout {idle_timeout_seconds} "
-                ">>'{log_path}' 2>&1\"";
+            for argument in [
+                "-c",
+                "exec setsid dotnet \"$0\" --pool-host \"$1\" --project \"$2\" "
+                "--pool-host-idle-timeout \"$3\" >>\"$4\" 2>&1",
+                assembly_location,
+                socket_path,
+                project,
+                "{idle_timeout_seconds}",
+                log_path
+            ] do
+                start_info.argument_list.add(argument);
+            od
             start_info.use_shell_execute = false;
 
             if !Process.start(start_info)? then
