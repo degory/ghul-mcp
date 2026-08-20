@@ -1,0 +1,480 @@
+namespace Analyser is
+    use System.Diagnostics.Process;
+    use System.Diagnostics.ProcessStartInfo;
+
+    use System.Exception;
+    use System.Reflection.Assembly;
+
+    use System.Security.Cryptography.MD5;
+
+    use System.Text.Json.JsonElement;
+    use System.Text.Json.JsonSerializer;
+    use System.Text.StringBuilder;
+    use System.Text.UTF8Encoding;
+
+    use System.Net.Sockets.AddressFamily;
+    use System.Net.Sockets.NetworkStream;
+    use System.Net.Sockets.ProtocolType;
+    use System.Net.Sockets.Socket;
+    use System.Net.Sockets.SocketType;
+    use System.Net.Sockets.UnixDomainSocketEndPoint;
+
+    use Collections.LIST;
+
+    use IO.File;
+    use IO.Path;
+    use IO.StreamReader;
+    use IO.StreamWriter;
+
+    use MCP.WIRE;
+
+    // The client half of the per-project pool host (see POOL_HOST): finds
+    // the host for a project through the project-keyed socket path, spawns
+    // one when no host is listening, and exchanges one JSON request per
+    // connection. The MCP front end uses this instead of owning analysers
+    // itself, so every client of a project - the front end here, the edit
+    // hook feeding edits - shares one warm analyser.
+    class HOST_CLIENT is
+        // Must move together with POOL_HOST.PROTOCOL_VERSION: a mismatch is
+        // the signal to recycle a host left over from an incompatible
+        // ghul-mcp build.
+        PROTOCOL_VERSION: int static => 1;
+
+        // How long to wait for a freshly spawned host to bind its socket
+        // before giving up. A cold dotnet start is comfortably inside this;
+        // exceeding it means the host failed to start at all.
+        SPAWN_WAIT_MS: int static => 30000;
+
+        CONNECT_POLL_MS: int static => 100;
+
+        socket_path_for(project: string) -> string static is
+            let builder = StringBuilder();
+
+            for b in MD5.create().compute_hash(UTF8Encoding(false).get_bytes(Path.get_full_path(project))) do
+                builder.append("{b:x2}");
+            od
+
+            // Socket paths are capped at 108 bytes on Linux; the digest
+            // keeps every project under the same short prefix.
+            return "/tmp/ghul-mcp-pool-{builder.to_string().substring(0, 16)}.sock";
+        si
+
+        // A host this client spawns logs its banners to a sibling of the
+        // socket rather than inheriting stdout - the front end's stdout
+        // carries protocol JSON and must stay clean.
+        socket_log_for(socket_path: string) -> string static is
+            return "{socket_path}.log";
+        si
+
+        // Run one tool call on the project's host, spawning the host (and,
+        // host-side, the analyser) on demand. Returns the host's rendered,
+        // stamped result text.
+        call(project: string, tool: string, arguments: JsonElement, idle_timeout_seconds: int) -> string static is
+            let reply = exchange(
+                project,
+                request_json(HOST_CALL_REQUEST(tool, arguments)),
+                idle_timeout_seconds,
+                true
+            );
+
+            let result = WIRE.try_get_string(reply, "result");
+
+            if !result? then
+                throw Exception("the pool host returned no result for the call");
+            fi
+
+            return result;
+        si
+
+        // The host's status for `project`, or null when no host is
+        // listening. Never spawns anything, so status probes stay cheap.
+        info_if_running(project: string) -> INFO_REPLY? static is
+            try
+                let reply = exchange(
+                    project,
+                    request_json(TRIVIAL_REQUEST("info")),
+                    0,
+                    false
+                );
+
+                return JsonSerializer.deserialize[INFO_REPLY](reply.to_string(), WIRE.options);
+            catch ex: Exception
+                return null;
+            yrt
+        si
+
+        // Dispose the host's analyser, if both a host and a warm analyser
+        // exist. The host stays up, so later requests spawn a fresh
+        // analyser rather than a fresh host.
+        release(project: string) -> bool static is
+            try
+                let reply = exchange(
+                    project,
+                    request_json(TRIVIAL_REQUEST("release")),
+                    0,
+                    false
+                );
+
+                return WIRE.try_get_bool(reply, "released");
+            catch ex: Exception
+                return false;
+            yrt
+        si
+
+        // Ask the host's analyser to sample its managed heap, spawning the
+        // host on demand. `running` distinguishes an analyser that was never
+        // spawned from one the watchdog recycled.
+        heap_check_state(project: string, idle_timeout_seconds: int) -> HEAP_REPLY static is
+            let reply = exchange(
+                project,
+                request_json(TRIVIAL_REQUEST("heap_check")),
+                idle_timeout_seconds,
+                true
+            );
+
+            let state = JsonSerializer.deserialize[HEAP_REPLY](reply.to_string(), WIRE.options);
+
+            assert state? else
+                Exception("the pool host returned no heap-check state");
+
+            return state;
+        si
+
+        // Ask a running host to exit. Best effort: a host too old to know
+        // the op simply ignores it and dies on its idle timeout instead.
+        shutdown_if_running(project: string) static is
+            try
+                exchange(
+                    project,
+                    request_json(TRIVIAL_REQUEST("shutdown")),
+                    0,
+                    false
+                );
+            catch ex: Exception
+            yrt
+        si
+
+        // Open a connection, run the hello handshake, send one request,
+        // and return the parsed reply. `spawn` controls whether a missing
+        // host is started (queries) or counts as absent (status probes).
+        exchange(
+            project: string,
+            request_line: string,
+            idle_timeout_seconds: int,
+            spawn: bool
+        ) -> JsonElement static is
+            let socket_path = socket_path_for(project);
+
+            let connection = connect_with_handshake(socket_path);
+
+            if !connection? then
+                if !spawn then
+                    throw Exception("no pool host is listening for {project}");
+                fi
+
+                spawn_host(socket_path, project, idle_timeout_seconds);
+            fi
+
+            let open = connection ?? connect_with_handshake(socket_path);
+
+            if !open? then
+                throw Exception("the pool host for {project} did not come up");
+            fi
+
+            let client = open;
+
+            try
+                write_line(client, request_line);
+
+                let reply = read_reply(client);
+
+                if !reply? then
+                    throw Exception("the pool host closed the connection without a reply");
+                fi
+
+                let frame = parse(reply);
+
+                if !frame? then
+                    throw Exception("the pool host reply was not JSON");
+                fi
+
+                if WIRE.try_get_bool(frame, "ok") == false then
+                    let error = WIRE.try_get_string(frame, "error");
+
+                    throw Exception(error ?? "the pool host rejected the request");
+                fi
+
+                return frame;
+            finally
+                client.close();
+            yrt
+        si
+
+        // Connect and run the hello handshake, recycling a host that speaks
+        // an incompatible protocol version: shut it down as best we can,
+        // unlink the stale socket, and let the caller's spawn path start a
+        // fresh one. Null when nothing is listening.
+        connect_with_handshake(socket_path: string) -> Socket? static is
+            let probe = try_connect(socket_path);
+
+            if !probe? then
+                return null;
+            fi
+
+            let client = probe;
+
+            if hello_matches(client) then
+                return client;
+            fi
+
+            // Some host from another ghul-mcp build holds the socket.
+            try
+                write_line(client, request_json(TRIVIAL_REQUEST("shutdown")));
+
+                read_reply(client);
+            catch ex: Exception
+            yrt
+
+            client.close();
+
+            try
+                File.delete(socket_path);
+            catch ex: Exception
+            yrt
+
+            return null;
+        si
+
+        hello_matches(client: Socket) -> bool static is
+            try
+                write_line(
+                    client,
+                    request_json(HELLO_REQUEST(PROTOCOL_VERSION))
+                );
+
+                let reply = read_reply(client);
+
+                if !reply? then
+                    return false;
+                fi
+
+                let frame = parse(reply);
+
+                if !frame? then
+                    return false;
+                fi
+
+                if WIRE.try_get_bool(frame, "ok") != true then
+                    return false;
+                fi
+
+                return WIRE.try_get_int(frame, "protocol") == PROTOCOL_VERSION;
+            catch ex: Exception
+                return false;
+            yrt
+        si
+
+        try_connect(socket_path: string) -> Socket? static is
+            let client = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED);
+
+            try
+                client.connect(UnixDomainSocketEndPoint(socket_path));
+                return client;
+            catch ex: Exception
+                client.close();
+                return null;
+            yrt
+        si
+
+        spawn_host(socket_path: string, project: string, idle_timeout_seconds: int) static is
+            let assembly = Assembly.get_entry_assembly();
+
+            if !assembly? then
+                throw Exception("could not locate the ghul-mcp assembly to spawn a pool host");
+            fi
+
+            let assembly_location = assembly.location;
+
+            if assembly_location.length == 0 then
+                throw Exception("the ghul-mcp assembly has no location to spawn a pool host from");
+            fi
+
+            let log_path = socket_log_for(socket_path);
+
+            let start_info = ProcessStartInfo();
+
+            // The variable parts - the assembly, socket and project paths -
+            // travel as positional arguments ($0..$4), never interpolated
+            // into the script text, so a project path containing shell
+            // metacharacters cannot escape it; ProcessStartInfo's argument
+            // list is a real argv, so spaces need no quoting either. The
+            // shell exists for the detach (setsid, so the host outlives the
+            // front end whose spawn started it) and the log redirection
+            // (the front end's stdout carries protocol JSON and must stay
+            // clean).
+            start_info.file_name = "/bin/sh";
+            for argument in [
+                "-c",
+                "exec setsid dotnet \"$0\" --pool-host \"$1\" --project \"$2\" "
+                "--pool-host-idle-timeout \"$3\" >>\"$4\" 2>&1",
+                assembly_location,
+                socket_path,
+                project,
+                "{idle_timeout_seconds}",
+                log_path
+            ] do
+                start_info.argument_list.add(argument);
+            od
+            start_info.use_shell_execute = false;
+
+            if !Process.start(start_info)? then
+                throw Exception("failed to start the pool host for {project}");
+            fi
+
+            // Wait for the socket to accept connections, not merely to
+            // exist: the host deletes and rebinds its socket at startup, so
+            // a file appearing early says nothing about reachability.
+            let deadline = System.Diagnostics.Stopwatch.start_new();
+
+            do
+                if let probe: Socket = try_connect(socket_path) then
+                    probe.close();
+                    return;
+                fi
+
+                if deadline.elapsed_milliseconds > cast long(SPAWN_WAIT_MS) then
+                    throw Exception("the pool host for {project} did not start listening");
+                fi
+
+                System.Threading.Thread.sleep(CONNECT_POLL_MS);
+            od
+        si
+
+        write_line(client: Socket, line: string) static is
+            let stream = NetworkStream(client, false);
+            let writer = StreamWriter(stream, UTF8Encoding(false));
+
+            writer.auto_flush = true;
+            writer.write_line(line);
+            writer.dispose();
+        si
+
+        read_reply(client: Socket) -> string? static is
+            let stream = NetworkStream(client, false);
+            let reader = StreamReader(stream, UTF8Encoding(false));
+
+            do
+                let line = reader.read_line();
+
+                if !line? then
+                    return null;
+                fi
+
+                if string.is_null_or_white_space(line) then
+                    continue;
+                fi
+
+                return line;
+            od
+        si
+
+        parse(line: string) -> JsonElement? static is
+            try
+                return JsonSerializer.deserialize[JsonElement](line, WIRE.options);
+            catch ex: Exception
+                return null;
+            yrt
+        si
+
+        request_json(request: object) -> string static is
+            return JsonSerializer.serialize(request, request.get_type(), WIRE.options);
+        si
+    si
+
+    // The MCP front end's per-project routing: resolves the `project`
+    // argument the way the in-process pool used to, remembers every
+    // project it has routed to (the hosts own the sessions now, so this
+    // list is what the `sessions` tool has to enumerate), and forwards
+    // each tool call to that project's host.
+    class PROJECT_HOSTS is
+        _default_project: string?;
+        _idle_timeout_seconds: int;
+        _touched: LIST[string];
+
+        init(default_project: string?, idle_timeout_seconds: int) is
+            if default_project? /\ default_project.length > 0 then
+                _default_project = Path.get_full_path(default_project);
+            else
+                // Claude Code and VS Code Copilot spawn MCP servers with
+                // cwd set to the project root; falling back to it means the
+                // standard registration config doesn't need to know a
+                // project path at all.
+                _default_project = Path.get_full_path(".");
+            fi
+
+            _idle_timeout_seconds = idle_timeout_seconds;
+            _touched = LIST[string]();
+        si
+
+        default_project: string? => _default_project;
+
+        idle_timeout_seconds: int => _idle_timeout_seconds;
+
+        // Every project this front end has routed a call to, in first-use
+        // order. The hosts own the sessions, so this list is the only local
+        // record of what the `sessions` tool can enumerate.
+        touched() -> LIST[string] => _touched;
+
+        resolve(project: string?) -> string is
+            if project? /\ project.length > 0 then
+                return Path.get_full_path(project);
+            fi
+
+            if let d: string = _default_project then
+                return d;
+            fi
+
+            throw Exception("no project specified and no default project configured");
+        si
+
+        route(name: string, arguments: JsonElement) -> string is
+            let project = resolve(WIRE.try_get_string(arguments, "project"));
+
+            if !_touched.contains(project) then
+                _touched.add(project);
+            fi
+
+            return HOST_CLIENT.call(project, name, arguments, _idle_timeout_seconds);
+        si
+    si
+
+    class HELLO_REQUEST is
+        op: string public;
+        protocol: int public;
+
+        init(protocol: int) is
+            op = "hello";
+            self.protocol = protocol;
+        si
+    si
+
+    class HOST_CALL_REQUEST is
+        op: string public;
+        tool: string public;
+        arguments: JsonElement public;
+
+        init(tool: string, arguments: JsonElement) is
+            op = "call";
+            self.tool = tool;
+            self.arguments = arguments;
+        si
+    si
+
+    class TRIVIAL_REQUEST is
+        op: string public;
+
+        init(op: string) is
+            self.op = op;
+        si
+    si
+si

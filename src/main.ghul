@@ -1,18 +1,26 @@
 use IO.Std;
 
-server_version: string => "1.0.0";
+server_version: string => "2.0.0";
 
-// The server version plus, when the default project has a warm analyser
-// session, the compiler version it advertised at spawn. Sessions for other
-// projects show their compiler version in the `sessions` tool instead.
-describe_version(pool: Analyser.ANALYSER_POOL) -> string is
-    let session = pool.warm_session_for(null);
+// The server version plus, when the default project's pool host has a warm
+// analyser, the compiler version it advertised at spawn. Probing never
+// spawns a host, so asking the version stays cheap.
+describe_version(hosts: Analyser.PROJECT_HOSTS) -> string is
+    let info: Analyser.INFO_REPLY? mut = null;
 
-    if !session? then
+    if let default_project: string = hosts.default_project then
+        info = Analyser.HOST_CLIENT.info_if_running(default_project);
+    fi
+
+    if !info? then
         return "ghul-mcp {server_version} (no analyser session warm for the default project)";
     fi
 
-    let compiler = session.compiler_version;
+    if !info.warm then
+        return "ghul-mcp {server_version} (no analyser session warm for the default project)";
+    fi
+
+    let compiler = info.compiler;
 
     if compiler? then
         return "ghul-mcp {server_version} (ghul.compiler {compiler})";
@@ -20,12 +28,6 @@ describe_version(pool: Analyser.ANALYSER_POOL) -> string is
 
     return "ghul-mcp {server_version} (compiler version unknown)";
 si
-
-// Cap on the pool of concurrently-warm analyser sessions. Each analyser is
-// a `dotnet ghul-compiler --analyse` subprocess, and each holds an
-// in-memory copy of every source file it's been given. Above the cap the
-// pool evicts the least recently used.
-max_sessions: int => 8;
 
 // Where the query log goes when no --query-log / --no-query-log argument
 // says otherwise: the XDG state directory, shared by every server instance
@@ -53,8 +55,8 @@ entry(arguments: string[]) is
 
     let default_project: string? mut = null;
     let query_log_path: string? mut = default_query_log_path();
-    let diagnostics_socket: string? mut = null;
-    let diagnostics_idle_timeout mut = Analyser.DIAGNOSTICS_DAEMON.DEFAULT_IDLE_TIMEOUT_SECONDS;
+    let pool_host_socket: string? mut = null;
+    let pool_idle_timeout mut = Analyser.POOL_HOST.DEFAULT_IDLE_TIMEOUT_SECONDS;
 
     let index mut = 0;
 
@@ -70,17 +72,17 @@ entry(arguments: string[]) is
         elif arg =~ "--no-query-log" then
             query_log_path = null;
             index = index + 1;
-        elif arg =~ "--diagnostics-daemon" /\ index + 1 < arguments.count then
-            diagnostics_socket = arguments[index + 1];
+        elif arg =~ "--pool-host" /\ index + 1 < arguments.count then
+            pool_host_socket = arguments[index + 1];
             index = index + 2;
-        elif arg =~ "--diagnostics-daemon-idle-timeout" /\ index + 1 < arguments.count then
+        elif arg =~ "--pool-host-idle-timeout" /\ index + 1 < arguments.count then
             let seconds_string = arguments[index + 1];
 
             try
-                diagnostics_idle_timeout = int.parse(seconds_string);
+                pool_idle_timeout = int.parse(seconds_string);
             catch ex: System.Exception
                 Std.error.write_line(
-                    "ghul-mcp: ignoring garbled --diagnostics-daemon-idle-timeout value: {seconds_string}"
+                    "ghul-mcp: ignoring garbled --pool-host-idle-timeout value: {seconds_string}"
                 );
             yrt
 
@@ -91,14 +93,12 @@ entry(arguments: string[]) is
         fi
     od
 
-    if let socket_path: string = diagnostics_socket then
-        let daemon_pool = Analyser.ANALYSER_POOL(default_project, max_sessions);
-
-        try
-            Analyser.DIAGNOSTICS_DAEMON.run(socket_path, daemon_pool, diagnostics_idle_timeout);
-        finally
-            daemon_pool.dispose();
-        yrt
+    if let socket_path: string = pool_host_socket then
+        if let project: string = default_project then
+            Analyser.POOL_HOST(project, pool_idle_timeout, server_version).run(socket_path);
+        else
+            Std.error.write_line("ghul-mcp: --pool-host requires --project");
+        fi
 
         return;
     fi
@@ -113,24 +113,30 @@ entry(arguments: string[]) is
 
     let query_log = MCP.QUERY_LOG(query_log_path);
     let server = MCP.SERVER(reader, Std.out, "ghul-mcp", server_version, query_log);
-    let pool = Analyser.ANALYSER_POOL(default_project, max_sessions);
 
-    query_log.log_start("ghul-mcp", server_version, pool.default_project);
+    // The front end owns no analyser of its own: every tool call routes to
+    // the target project's pool host, spawning one on demand (see
+    // PROJECT_HOSTS). The idle timeout is propagated to the hosts this
+    // process spawns, so a caller that wants short-lived hosts can set it
+    // once here.
+    let hosts = Analyser.PROJECT_HOSTS(default_project, pool_idle_timeout);
+
+    query_log.log_start("ghul-mcp", server_version, hosts.default_project);
 
     server.add_tool(
         MCP.TOOL(
             "version",
             "report the ghul-mcp server version, plus the analyser's compiler version when a session is warm for the default project",
             "{{\"type\": \"object\", \"properties\": {{}}}}",
-            arguments => describe_version(pool)
+            arguments => describe_version(hosts)
         )
     );
 
-    Analyser.ANALYSER_TOOLS.register(server, pool);
+    for tool in Analyser.ANALYSER_TOOLS.tools((name, arguments) => hosts.route(name, arguments)) do
+        server.add_tool(tool);
+    od
 
-    try
-        server.run();
-    finally
-        pool.dispose();
-    yrt
+    Analyser.ANALYSER_TOOLS.register_front_end(server, hosts);
+
+    server.run();
 si

@@ -39,7 +39,7 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 1.0.0 (no analyser session warm' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 2.0.0 (no analyser session warm' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
@@ -64,7 +64,17 @@ responses="$tmp/responses"
 cleanup() {
     exec 3>&- 2>/dev/null || true
     [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true
-    rm -rf "$tmp"
+    cleanup_pool_hosts
+    rm -rf "$tmp" ${tmp2:-} ${hints_dir:-}
+}
+
+# The pool hosts spawned by the front end outlive the server process;
+# match them by their unique scratch project paths so a run leaves
+# none behind. (Their idle timeout also retires them, eventually.)
+cleanup_pool_hosts() {
+    for d in "${tmp:-}" "${tmp2:-}" "${hints_dir:-}"; do
+        [ -n "$d" ] && pkill -f "ghul-mcp.dll --pool-host .* --project $d" 2>/dev/null || true
+    done
 }
 trap cleanup EXIT
 
@@ -73,7 +83,7 @@ cp -r src ghul-mcp.ghulproj Directory.Build.props Directory.Packages.props .conf
 cp "$tmp/src/main.ghul" "$tmp/main.pristine"
 
 mkfifo "$fifo"
-dotnet "$server" --default-project "$tmp" --query-log "$tmp/query-log.jsonl" <"$fifo" >"$responses" &
+dotnet "$server" --default-project "$tmp" --pool-host-idle-timeout 300 --query-log "$tmp/query-log.jsonl" <"$fifo" >"$responses" &
 server_pid=$!
 exec 3>"$fifo"
 
@@ -152,7 +162,7 @@ response 11 | grep -q 'length' || fail "members(StringBuilder): expected length 
 # no-arg queries continue to use the default.
 
 tmp2=$(mktemp -d)
-trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2"' EXIT
+trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; cleanup_pool_hosts; rm -rf "$tmp" "$tmp2"' EXIT
 
 cp -r src ghul-mcp.ghulproj Directory.Build.props Directory.Packages.props .config "$tmp2/"
 (cd "$tmp2" && dotnet tool restore >/dev/null)
@@ -234,7 +244,7 @@ new_pid=$(response 52 | grep -o "$tmp (pid [0-9]*" | grep -o '[0-9]*$')
 # inlay followed by a narrowing-killed one.
 
 hints_dir=$(mktemp -d)
-trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
+trap 'exec 3>&- 2>/dev/null || true; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true; cleanup_pool_hosts; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
 
 mkdir -p "$hints_dir/src"
 cat > "$hints_dir/src/test.ghul" <<'EOF'
@@ -321,41 +331,53 @@ grep -q '"tool":"hover"' "$qlog2" || fail "query log: hover entry"
 grep -q '"tool":"inlays"' "$qlog2" || fail "query log: inlays entries"
 grep -q '"status":"error"' "$qlog2" && fail "query log: unexpected error status"
 
-# --- part 6: diagnostics daemon ------------------------------------------
-# The Unix-socket front end a shell hook talks to instead of the MCP
-# protocol: EDIT-only diagnostics for one file, without the whole-project
-# Request.COMPILE() the `diagnostics` tool always pays.
+# --- part 6: pool host --------------------------------------------------
+# The per-project Unix-socket serve mode: the edit hook feeds edits to it
+# and the MCP front end routes tool calls to it, so one warm analyser is
+# shared between every client of the project. (The front-end sharing is
+# already exercised above - every part-2 call spawned or reused a host.)
 
-daemon_socket="$tmp/diag.sock"
-dotnet "$server" --diagnostics-daemon "$daemon_socket" --project "$tmp" >"$tmp/daemon.log" 2>&1 &
-daemon_pid=$!
-trap 'kill "$daemon_pid" 2>/dev/null || true; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
+host_socket="$tmp/pool.sock"
+dotnet "$server" --pool-host "$host_socket" --project "$tmp" >"$tmp/host.log" 2>&1 &
+host_pid=$!
+trap 'kill "$host_pid" 2>/dev/null || true; cleanup_pool_hosts; rm -rf "$tmp" "$tmp2" "$hints_dir"' EXIT
 
 for _ in $(seq 1 40); do
-    [ -S "$daemon_socket" ] && break
+    [ -S "$host_socket" ] && break
     sleep 0.25
 done
-[ -S "$daemon_socket" ] || fail "diagnostics daemon: socket never appeared"
+[ -S "$host_socket" ] || fail "pool host: socket never appeared"
 
-daemon_request() {
-    printf '%s\n%s\n' "$tmp" "$1" | nc -U -q 2 -w 15 "$daemon_socket"
+host_request() {
+    # hello handshake plus one request, both lines in one connection; the
+    # host replies to each and closes once it sees our half-close.
+    printf '{"op":"hello","protocol":1}\n%s\n' "$1" | nc -U -q 15 "$host_socket"
 }
 
-resp=$(daemon_request "src/main.ghul" | sed '/^$/d')
-[ -z "$resp" ] || fail "diagnostics daemon: expected no diagnostics for a clean file, got: $resp"
+resp=$(host_request '{"op":"edit","file":"src/main.ghul"}')
+echo "$resp" | grep -q '"ok":true' || fail "pool host: expected ok, got: $resp"
+echo "$resp" | grep -q '"diagnostics":\[\]' || fail "pool host: expected empty diagnostics for a clean file, got: $resp"
 
 echo "this is not ghul" >> "$tmp/src/main.ghul"
-resp=$(daemon_request "src/main.ghul")
-echo "$resp" | grep -q "^1" || fail "diagnostics daemon: expected a severity-1 error after breaking main.ghul, got: $resp"
+resp=$(host_request '{"op":"edit","file":"src/main.ghul"}')
+echo "$resp" | grep -q '"severity":1' || fail "pool host: expected a severity-1 diagnostic after breaking main.ghul, got: $resp"
+
+# a tool call on the same host sees the state the edits fed it
+resp=$(host_request '{"op":"call","tool":"hover_of","arguments":{"name":"no_such_symbol_xyz"}}')
+echo "$resp" | grep -q '"ok":true' || fail "pool host: call op failed: $resp"
+echo "$resp" | grep -q 'no symbol named' || fail "pool host: call result missing the miss text: $resp"
 
 cp "$tmp/main.pristine" "$tmp/src/main.ghul"
-resp=$(daemon_request "src/main.ghul" | sed '/^$/d')
-[ -z "$resp" ] || fail "diagnostics daemon: expected clean again after repair, got: $resp"
+resp=$(host_request '{"op":"edit","file":"src/main.ghul"}')
+echo "$resp" | grep -q '"diagnostics":\[\]' || fail "pool host: expected clean again after repair, got: $resp"
 
-resp=$(daemon_request "../../../../../../etc/passwd")
-echo "$resp" | grep -q "ERROR.*escapes the project directory" || fail "diagnostics daemon: expected a path-escape rejection, got: $resp"
+resp=$(host_request '{"op":"edit","file":"../../../../../../etc/passwd"}')
+echo "$resp" | grep -q 'escapes the project directory' || fail "pool host: expected a path-escape rejection, got: $resp"
 
-kill "$daemon_pid" 2>/dev/null || true
-wait "$daemon_pid" 2>/dev/null || true
+resp=$(host_request '{"op":"bogus"}')
+echo "$resp" | grep -q 'unknown op' || fail "pool host: expected an unknown-op rejection, got: $resp"
+
+kill "$host_pid" 2>/dev/null || true
+wait "$host_pid" 2>/dev/null || true
 
 echo "smoke test passed"
