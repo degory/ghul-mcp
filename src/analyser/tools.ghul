@@ -3,6 +3,7 @@ namespace Analyser is
     use System.Text.Json.JsonElement;
 
     use Collections.LIST;
+    use Collections.MAP;
 
     use Analysis.Protocol.DIAGNOSTIC;
     use Analysis.Protocol.INLAY_HINT;
@@ -80,19 +81,18 @@ namespace Analyser is
             "{PROJECT_PROPERTY}"
             "}}}}";
 
-        // Route a tool call through the pool and stamp the result with the
-        // project and compiler that answered it. The stamp is the defence
-        // against the quiet failure mode of multi-project routing: a call
-        // that forgot `project` is answered by the default project, and a
-        // warm session keeps answering on a compiler pin that has since
-        // been bumped - without the stamp, nothing in the result betrays
-        // either.
-        with_session(
-            pool: ANALYSER_POOL,
-            arguments: JsonElement,
-            run: (ANALYSER_SESSION, JsonElement) -> string
+        // Run one entry-table tool against a session and stamp the result
+        // with the project and compiler that answered it. The stamp is the
+        // defence against the quiet failure mode of multi-project routing:
+        // a call that forgot `project` is answered by the default project,
+        // and a warm session keeps answering on a compiler pin that has
+        // since been bumped - without the stamp, nothing in the result
+        // betrays either.
+        stamped_call(
+            session: ANALYSER_SESSION,
+            run: (ANALYSER_SESSION, JsonElement) -> string,
+            arguments: JsonElement
         ) -> string static is
-            let session = pool.get_session(WIRE.try_get_string(arguments, "project"));
             let result = run(session, arguments);
 
             // Read the version after `run`, not before: the session spawns
@@ -109,148 +109,224 @@ namespace Analyser is
             return "[{session.project_directory} · {compiler_text}]\n{result}";
         si
 
-        register(server: SERVER, pool: ANALYSER_POOL) static is
-            server.add_tool(
-                TOOL(
+        // The shared tool table: name, description, input schema, and the
+        // session-level handler. Both front ends build from this - the MCP
+        // server wraps each entry in a proxy that routes the call to the
+        // project's pool host, and the host dispatches entries against the
+        // analyser it keeps warm. The lifecycle tools (sessions,
+        // release_session, heap_check) are front-end concerns and are
+        // registered separately.
+        table() -> LIST[TOOL_ENTRY] static is
+            let result = LIST[TOOL_ENTRY]();
+
+            result.add(
+                TOOL_ENTRY(
                     "diagnostics",
                     "compile the ghūl project and report errors and warnings. Large result sets come back as a summary (counts by severity, a by-code and top-files breakdown, every error in full); filter with `file`, `severity`, `code`, or `exclude_codes` to see individual warnings. For narrowing / flow annotations, use the `inlays` tool",
                     DIAGNOSTICS_SCHEMA,
-                    arguments => with_session(pool, arguments, run_diagnostics)
+                    (session, args) => run_diagnostics(session, args)
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "inlays",
                     "narrowing / flow inlays for one file, as the editor would show them inline: where a value is narrowed (to a variant, to non-null, to an isa-type) and where a narrowing is killed. File-scoped. Use to see why a value is or isn't narrowed at a point",
                     INLAY_SCHEMA,
-                    arguments => with_session(pool, arguments, run_inlays)
+                    (session, args) => run_inlays(session, args)
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "hover",
                     "signature and kind of the symbol at a position, as the IDE hover would show it",
                     POSITION_SCHEMA,
-                    arguments => with_session(pool, arguments, run_hover)
+                    (session, args) => run_hover(session, args)
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "definition",
                     "location where the symbol at a position is defined",
                     POSITION_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_position_locations(session, args, "definition"))
+                    (session, args) => run_position_locations(session, args, "definition")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "references",
                     "all locations that reference the symbol at a position",
                     POSITION_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_position_locations(session, args, "references"))
+                    (session, args) => run_position_locations(session, args, "references")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "implementations",
                     "locations implementing the trait member or overriding the method at a position",
                     POSITION_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_position_locations(session, args, "implementations"))
+                    (session, args) => run_position_locations(session, args, "implementations")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "symbols",
                     "search symbol declarations across the project by substring; empty query lists every symbol",
                     QUERY_SCHEMA,
-                    arguments => with_session(pool, arguments, run_symbols)
+                    (session, args) => run_symbols(session, args)
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "hover_of",
                     "signature and kind of a symbol looked up by name (case-insensitive); returns the candidate list when multiple symbols share the name",
                     NAME_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "hover"))
+                    (session, args) => run_by_name(session, args, "hover")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "definition_of",
                     "declaration location of a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "definition"))
+                    (session, args) => run_by_name(session, args, "definition")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "references_of",
                     "all references to a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "references"))
+                    (session, args) => run_by_name(session, args, "references")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "implementations_of",
                     "trait implementations or method overrides for a symbol looked up by name",
                     NAME_SCHEMA,
-                    arguments => with_session(pool, arguments, (session, args) => run_by_name(session, args, "implementations"))
+                    (session, args) => run_by_name(session, args, "implementations")
                 )
             );
 
-            server.add_tool(
-                TOOL(
+            result.add(
+                TOOL_ENTRY(
                     "members",
                     "list the members of a type: fields, properties, methods, plus inherited members and (for a union) its variants. Works for ghūl-declared and imported types; pass the type as it would appear in ghūl source",
                     TYPE_SCHEMA,
-                    arguments => with_session(pool, arguments, run_members)
+                    (session, args) => run_members(session, args)
                 )
             );
 
+            return result;
+        si
+
+        // The MCP tools, each a thin proxy routing its call to the project's
+        // pool host (see HOST_CLIENT): the front end owns no analyser of its
+        // own, so a project's hook-fed host answers with warm, current
+        // state.
+        tools(route: (string, JsonElement) -> string) -> LIST[TOOL] static is
+            let result = LIST[TOOL]();
+
+            for entry in table() do
+                let name = entry.name;
+
+                result.add(
+                    TOOL(
+                        name,
+                        entry.description,
+                        entry.input_schema,
+                        arguments => route(name, arguments)
+                    )
+                );
+            od
+
+            return result;
+        si
+
+        // The host-side dispatch table: tool name to session-level handler.
+        handlers() -> MAP[string, (ANALYSER_SESSION, JsonElement) -> string] static is
+            let result = MAP[string, (ANALYSER_SESSION, JsonElement) -> string]();
+
+            for entry in table() do
+                result[entry.name] = entry.run;
+            od
+
+            return result;
+        si
+
+        // The lifecycle tools the MCP front end keeps for itself: the pool
+        // hosts own the sessions now, so these render host status rather
+        // than an in-process pool.
+        register_front_end(server: SERVER, hosts: PROJECT_HOSTS) static is
             server.add_tool(
                 TOOL(
                     "sessions",
-                    "list the analyser sessions currently warm in the pool - project directory, OS pid, compiler version, and known source count for each",
+                    "list the analyser hosts this session has routed to - project directory, OS pid, compiler version, and known source count for each",
                     "{{\"type\": \"object\", \"properties\": {{}}}}",
-                    arguments => run_sessions(pool)
+                    arguments => run_sessions(hosts)
                 )
             );
 
             server.add_tool(
                 TOOL(
                     "release_session",
-                    "dispose the analyser session for `project` if the pool has one. Use to free memory or to force a fresh spawn when a session gets into a bad state. Absent project releases the default project's session.",
+                    "dispose the analyser for `project` if a pool host is keeping one warm. Use to free memory or to force a fresh spawn when an analyser gets into a bad state. Absent project releases the default project's.",
                     "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",
-                    arguments => run_release_session(pool, arguments)
+                    arguments => run_release_session(hosts, arguments)
                 )
             );
 
             server.add_tool(
                 TOOL(
                     "heap_check",
-                    "ask the analyser for `project` to sample its managed heap. If the heap has grown past the recycle threshold, the analyser writes restart and exits; ghul-mcp drops the session and the next request spawns a fresh one.",
+                    "ask the analyser for `project` to sample its managed heap. If the heap has grown past the recycle threshold, the analyser writes restart and exits; the host drops it and the next request spawns a fresh one.",
                     "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",
-                    arguments => run_heap_check(pool, arguments)
+                    arguments => run_heap_check(hosts, arguments)
                 )
             );
         si
 
-        run_sessions(pool: ANALYSER_POOL) -> string static is
-            let sessions = pool.snapshot_sessions();
+        run_sessions(hosts: PROJECT_HOSTS) -> string static is
+            let result = StringBuilder();
+            let warm_count mut = 0;
 
-            if sessions.count == 0 then
-                let default_project = pool.default_project;
+            for project in hosts.touched() do
+                let info = HOST_CLIENT.info_if_running(project);
+
+                if info? /\ info.warm then
+                    let pid = info.pid;
+                    let pid_text =
+                        if pid? then
+                            "pid {pid}"
+                        else
+                            "not running"
+                        fi;
+
+                    let compiler = info.compiler;
+                    let compiler_text =
+                        if compiler? then
+                            "ghul.compiler {compiler}"
+                        else
+                            "compiler version unknown"
+                        fi;
+
+                    result.append("{project} ({pid_text}, {compiler_text}, {info.source_count} sources)\n");
+                    warm_count = warm_count + 1;
+                fi
+            od
+
+            if warm_count == 0 then
+                let default_project = hosts.default_project;
 
                 if default_project? then
                     return "no sessions warm yet - default project: {default_project}";
@@ -259,77 +335,48 @@ namespace Analyser is
                 return "no sessions warm yet - no default project configured";
             fi
 
-            let result = StringBuilder();
-
-            for session in sessions do
-                let pid = session.process_id;
-                let pid_text =
-                    if pid? then
-                        "pid {pid}"
-                    else
-                        "not running"
-                    fi;
-
-                let compiler = session.compiler_version;
-                let compiler_text =
-                    if compiler? then
-                        "ghul.compiler {compiler}"
-                    else
-                        "compiler version unknown"
-                    fi;
-
-                result.append("{session.project_directory} ({pid_text}, {compiler_text}, {session.known_source_count} sources)\n");
-            od
-
-            if let default_project: string = pool.default_project then
+            if let default_project: string = hosts.default_project then
                 result.append("(default project: {default_project})\n");
             fi
 
             return result.to_string();
         si
 
-        run_release_session(pool: ANALYSER_POOL, arguments: JsonElement) -> string static is
+        run_release_session(hosts: PROJECT_HOSTS, arguments: JsonElement) -> string static is
             let project = WIRE.try_get_string(arguments, "project");
+
             let target =
                 if project? /\ project.length > 0 then
                     project
                 else
-                    pool.default_project ?? ""
+                    hosts.default_project ?? ""
                 fi;
 
             if target.length == 0 then
                 return "no project specified and no default project configured";
             fi
 
-            if pool.release(target) then
+            if HOST_CLIENT.release(hosts.resolve(project)) then
                 return "released session for {target}";
             fi
 
             return "no warm session for {target}";
         si
 
-        run_heap_check(pool: ANALYSER_POOL, arguments: JsonElement) -> string static is
-            let project = WIRE.try_get_string(arguments, "project");
-            let session = pool.get_session(project);
+        run_heap_check(hosts: PROJECT_HOSTS, arguments: JsonElement) -> string static is
+            let project = hosts.resolve(WIRE.try_get_string(arguments, "project"));
 
-            let was_running = session.is_running;
+            let info = HOST_CLIENT.heap_check_state(project, hosts.idle_timeout_seconds);
 
-            if !was_running then
-                return "no analyser running for {session.project_directory} - nothing to check";
+            if !info.running then
+                return "no analyser running for {project} - nothing to check";
             fi
 
-            let healthy = session.send_heap_check();
-
-            if healthy then
-                return "heap check ok for {session.project_directory}";
+            if !info.healthy then
+                return "analyser for {project} was recycled - a fresh process will spawn on next request";
             fi
 
-            // Watchdog wrote restart and exited; ensure the pool releases
-            // so a subsequent request spawns fresh rather than reusing the
-            // now-dead handle.
-            pool.release(session.project_directory);
-
-            return "analyser for {session.project_directory} was recycled - a fresh process will spawn on next request";
+            return "heap check ok for {project}";
         si
 
         // A flat dump of every diagnostic is unusable on a large project -
@@ -1369,6 +1416,27 @@ namespace Analyser is
         init(key: string, count: int) is
             self.key = key;
             self.count = count;
+        si
+    si
+    // One row of ANALYSER_TOOLS.table: the wire metadata plus the
+    // session-level handler, so the MCP proxy and the pool host build from
+    // the same source of truth.
+    class TOOL_ENTRY is
+        name: string public;
+        description: string public;
+        input_schema: string public;
+        run: (ANALYSER_SESSION, JsonElement) -> string public;
+
+        init(
+            name: string,
+            description: string,
+            input_schema: string,
+            run: (ANALYSER_SESSION, JsonElement) -> string
+        ) is
+            self.name = name;
+            self.description = description;
+            self.input_schema = input_schema;
+            self.run = run;
         si
     si
 si

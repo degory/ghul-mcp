@@ -7,3 +7,4 @@ publish/
 .ghul-options.json
 .analysis.rsp
 .ghul-mcp-*.rsp
+.build.rsp

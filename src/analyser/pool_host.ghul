@@ -1,0 +1,538 @@
+namespace Analyser is
+    use System.Exception;
+    use System.Text.Json.JsonElement;
+    use System.Text.Json.JsonSerializer;
+    use System.Text.Json.JsonValueKind;
+    use System.Text.UTF8Encoding;
+
+    use System.Net.Sockets.AddressFamily;
+    use System.Net.Sockets.NetworkStream;
+    use System.Net.Sockets.ProtocolType;
+    use System.Net.Sockets.SelectMode;
+    use System.Net.Sockets.Socket;
+    use System.Net.Sockets.SocketType;
+    use System.Net.Sockets.UnixDomainSocketEndPoint;
+
+    use Analysis.Protocol.DIAGNOSTIC;
+    use Analysis.Protocol.Response;
+
+    use Collections.LIST;
+    use Collections.MAP;
+
+    use IO.File;
+    use IO.Path;
+    use IO.StreamReader;
+    use IO.StreamWriter;
+    use IO.Std;
+
+    use MCP.WIRE;
+
+    // The per-project pool host: a Unix-domain-socket serve mode standing in
+    // for the MCP stdio transport when the caller is another process - the
+    // edit hook feeding edits, or an MCP front end routing a tool call to
+    // the project's shared analyser. One host per project, discovered
+    // through the project-keyed socket path (HOST_CLIENT.socket_path_for);
+    // whichever client arrives first spawns it, and every client that
+    // reaches it shares the analyser it keeps warm. That sharing is the
+    // point: a host the hook has been feeding edits answers an MCP query
+    // from warm, current state, and the first full compile is paid once per
+    // project rather than once per client.
+    //
+    // The wire shape is newline-delimited JSON, one request per line, one
+    // reply per request, mirroring the MCP transport's framing. A connection
+    // opens with a hello handshake carrying the protocol version, so a
+    // client meeting a host from an incompatible ghul-mcp can recycle it
+    // rather than talk across versions. Requests after the handshake may
+    // continue on the same connection until EOF, but callers use one
+    // connection per request - connections are served serially, because the
+    // analyser session underneath is a single pair of pipes whose exchanges
+    // could only interleave. A client arriving while another's request is in
+    // flight waits for it; warm requests are milliseconds, and the long
+    // cases (a cold spawn, a whole-project compile) are the ones this
+    // architecture exists to amortise.
+    class POOL_HOST is
+        PROTOCOL_VERSION: int static => 1;
+
+        // Bound on how long a connection may sit idle mid-request. The
+        // accept loop is single-threaded, so a client that connects and
+        // never finishes writing its request would otherwise stall every
+        // other caller behind it indefinitely.
+        SOCKET_TIMEOUT_MS: int static => 10000;
+
+        // How long the host waits for a connection before giving up and
+        // exiting. It holds a warm analyser, so an editing session that
+        // ended hours ago otherwise costs hundreds of megabytes to answer
+        // nothing - the same trade the analyser's own idle timeout makes,
+        // and the same default. Clients relaunch on demand, so the only
+        // cost of exiting early is one cold analyser.
+        DEFAULT_IDLE_TIMEOUT_SECONDS: int static => 1800;
+
+        // Granularity of the wait. The accept loop cannot block indefinitely
+        // and still notice the timeout, so it polls in chunks; the wakeups
+        // are far too cheap to register against the process's CPU time.
+        POLL_CHUNK_SECONDS: int static => 5;
+
+        _project: string;
+        _idle_timeout_seconds: int;
+        _server_version: string;
+        _handlers: MAP[string, (ANALYSER_SESSION, JsonElement) -> string];
+        _session: ANALYSER_SESSION?;
+        _shutdown: bool;
+
+        init(project: string, idle_timeout_seconds: int, server_version: string) is
+            _project = Path.get_full_path(project);
+            _idle_timeout_seconds = idle_timeout_seconds;
+            _server_version = server_version;
+            _handlers = ANALYSER_TOOLS.handlers();
+            _session = null;
+            _shutdown = false;
+        si
+
+        run(socket_path: string) is
+            if File.exists(socket_path) then
+                File.delete(socket_path);
+            fi
+
+            let listener = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED);
+
+            listener.bind(UnixDomainSocketEndPoint(socket_path));
+            listener.listen(16);
+
+            Std.error.write_line("ghul-mcp: pool host listening on {socket_path} for {_project}");
+
+            // A disabled timeout waits indefinitely, which is what Poll does
+            // with a negative timeout.
+            let poll_microseconds =
+                if _idle_timeout_seconds <= 0 then
+                    -1
+                else
+                    POLL_CHUNK_SECONDS * 1000000
+                fi;
+
+            try
+                let idle_seconds mut = 0;
+
+                do
+                    if !listener.poll(poll_microseconds, SelectMode.SELECT_READ) then
+                        idle_seconds = idle_seconds + POLL_CHUNK_SECONDS;
+
+                        if _idle_timeout_seconds > 0 /\ idle_seconds >= _idle_timeout_seconds then
+                            Std.error.write_line(
+                                "ghul-mcp: pool host exiting after {_idle_timeout_seconds}s idle"
+                            );
+
+                            break;
+                        fi
+
+                        if _shutdown then
+                            break;
+                        fi
+
+                        continue;
+                    fi
+
+                    idle_seconds = 0;
+
+                    let client = listener.accept();
+
+                    try
+                        handle_connection(client);
+                    catch ex: Exception
+                        Std.error.write_line("ghul-mcp: pool host connection error: {ex.message}");
+                    finally
+                        client.close();
+                    yrt
+
+                    if _shutdown then
+                        break;
+                    fi
+                od
+            finally
+                listener.close();
+
+                try
+                    File.delete(socket_path);
+                catch ex: Exception
+                yrt
+
+                release_session();
+            yrt
+        si
+
+        handle_connection(client: Socket) is
+            client.receive_timeout = SOCKET_TIMEOUT_MS;
+            client.send_timeout = SOCKET_TIMEOUT_MS;
+
+            let stream = NetworkStream(client, false);
+            let encoding = UTF8Encoding(false);
+
+            let reader = StreamReader(stream, encoding);
+            let writer = StreamWriter(stream, encoding);
+
+            writer.auto_flush = true;
+
+            let line = reader.read_line();
+
+            if !line? then
+                return;
+            fi
+
+            let frame = parse_frame(line);
+
+            if !frame? then
+                writer.write_line(error_json("could not parse the hello request"));
+                return;
+            fi
+
+            let op = WIRE.try_get_string(frame, "op");
+
+            if op? /\ op =~ "hello" then
+                let protocol = WIRE.try_get_int(frame, "protocol");
+
+                if protocol != PROTOCOL_VERSION then
+                    writer.write_line(
+                        error_json(
+                            "protocol mismatch: this host speaks version {PROTOCOL_VERSION}"
+                        )
+                    );
+
+                    return;
+                fi
+
+                writer.write_line(
+                    reply_json(HELLO_REPLY(true, PROTOCOL_VERSION, _server_version))
+                );
+            else
+                writer.write_line(error_json("expected a hello request first"));
+                return;
+            fi
+
+            // A read that times out or errors after a reply is a client
+            // that finished its business and left the connection open -
+            // close it rather than log a connection error for it.
+            do
+                let request_line: string? mut = null;
+
+                try
+                    request_line = reader.read_line();
+                catch ex: Exception
+                    break;
+                yrt
+
+                if !request_line? then
+                    break;
+                fi
+
+                if string.is_null_or_white_space(request_line) then
+                    continue;
+                fi
+
+                writer.write_line(handle_request(request_line));
+            od
+        si
+
+        handle_request(line: string) -> string is
+            let frame = parse_frame(line);
+
+            if !frame? then
+                return error_json("could not parse the request");
+            fi
+
+            let op = WIRE.try_get_string(frame, "op");
+
+            if !op? then
+                return error_json("no op in the request");
+            fi
+
+            if op =~ "call" then
+                return handle_call(frame);
+            elif op =~ "edit" then
+                return handle_edit(frame);
+            elif op =~ "info" then
+                return handle_info();
+            elif op =~ "release" then
+                return handle_release();
+            elif op =~ "heap_check" then
+                return handle_heap_check();
+            elif op =~ "shutdown" then
+                _shutdown = true;
+
+                return reply_json(OK_REPLY());
+            fi
+
+            return error_json("unknown op: {op}");
+        si
+
+        handle_call(frame: JsonElement) -> string is
+            let tool = WIRE.try_get_string(frame, "tool");
+
+            if !tool? \/ tool.length == 0 then
+                return error_json("call requires a tool name");
+            fi
+
+            if !_handlers.contains_key(tool) then
+                return error_json("unknown tool: {tool}");
+            fi
+
+            let arguments = WIRE.try_get_element(frame, "arguments");
+
+            if arguments.value_kind == JsonValueKind.UNDEFINED then
+                return error_json("call requires arguments (an empty object suffices)");
+            fi
+
+            try
+                let result = ANALYSER_TOOLS.stamped_call(session(), _handlers[tool], arguments);
+
+                return reply_json(CALL_REPLY(result));
+            catch ex: Exception
+                return error_json("{ex.get_type().name}: {ex.message}");
+            yrt
+        si
+
+        handle_edit(frame: JsonElement) -> string is
+            let file = WIRE.try_get_string(frame, "file");
+
+            if !file? \/ file.length == 0 then
+                return error_json("edit requires a file path relative to the project");
+            fi
+
+            // Rejects an absolute `file` (Path.combine ignores the base and
+            // returns it as-is) and a `../` escape, either of which would
+            // otherwise let any local caller on this socket read and EDIT an
+            // arbitrary file outside the project - this front end has no
+            // other access control, unlike the MCP tools, which are only
+            // reachable over the spawning process's own stdio.
+            if !is_within_project(_project, file) then
+                return error_json("file escapes the project directory");
+            fi
+
+            try
+                let response = session().edit_diagnostics(file);
+                let result = LIST[EDIT_DIAGNOSTIC]();
+
+                for diagnostic in response.diagnostics do
+                    if diagnostic.path =~ file then
+                        result.add(
+                            EDIT_DIAGNOSTIC(
+                                diagnostic.severity,
+                                diagnostic.start_line,
+                                diagnostic.start_column,
+                                diagnostic.code ?? "",
+                                diagnostic.message.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                            )
+                        );
+                    fi
+                od
+
+                return reply_json(EDIT_REPLY(result));
+            catch ex: Exception
+                return error_json("{ex.get_type().name}: {ex.message}");
+            yrt
+        si
+
+        handle_info() -> string is
+            let warm mut = false;
+            let pid: int? mut = null;
+            let compiler: string? mut = null;
+            let source_count mut = 0;
+
+            if let session: ANALYSER_SESSION = _session then
+                warm = true;
+                pid = session.process_id;
+                compiler = session.compiler_version;
+                source_count = session.known_source_count;
+            fi
+
+            return reply_json(INFO_REPLY(_project, warm, pid, compiler, source_count));
+        si
+
+        handle_release() -> string is
+            return reply_json(RELEASE_REPLY(release_session()));
+        si
+
+        handle_heap_check() -> string is
+            let current = session();
+
+            if !current.is_running then
+                return reply_json(HEAP_REPLY(false, false));
+            fi
+
+            let healthy = current.send_heap_check();
+
+            if !healthy then
+                // Watchdog wrote restart and exited; drop the session so a
+                // subsequent request spawns fresh rather than reusing the
+                // now-dead handle.
+                release_session();
+            fi
+
+            return reply_json(HEAP_REPLY(true, healthy));
+        si
+
+        // The host's one analyser, spawned lazily on first use so an info
+        // or version probe never pays for a process it does not need.
+        session() -> ANALYSER_SESSION is
+            if let session: ANALYSER_SESSION = _session then
+                return session;
+            fi
+
+            let session = ANALYSER_SESSION(_project);
+            _session = session;
+
+            return session;
+        si
+
+        release_session() -> bool is
+            if !_session? then
+                return false;
+            fi
+
+            try
+                _session.dispose();
+            catch ex: Exception
+            yrt
+
+            _session = null;
+
+            return true;
+        si
+
+        parse_frame(line: string) -> JsonElement? static is
+            try
+                return JsonSerializer.deserialize[JsonElement](line, WIRE.options);
+            catch ex: Exception
+                return null;
+            yrt
+        si
+
+        error_json(message: string) -> string static is
+            return reply_json(ERROR_REPLY(message));
+        si
+
+        reply_json(reply: object) -> string static is
+            return JsonSerializer.serialize(reply, reply.get_type(), WIRE.options);
+        si
+
+        // Rejects an absolute `path` and a `../` escape against the host's
+        // own project directory.
+        is_within_project(project_directory: string, path: string) -> bool static is
+            let root = Path.get_full_path(project_directory);
+            let resolved = Path.get_full_path(Path.combine(root, path));
+
+            let root_with_separator =
+                if root.ends_with(Path.directory_separator_char) then
+                    root
+                else
+                    "{root}{Path.directory_separator_char}"
+                fi;
+
+            return resolved.starts_with(root_with_separator);
+        si
+    si
+
+    class HELLO_REPLY is
+        ok: bool public;
+        protocol: int public;
+        server_version: string public;
+
+        init(ok: bool, protocol: int, server_version: string) is
+            self.ok = ok;
+            self.protocol = protocol;
+            self.server_version = server_version;
+        si
+    si
+
+    class CALL_REPLY is
+        ok: bool public;
+        result: string public;
+
+        init(result: string) is
+            ok = true;
+            self.result = result;
+        si
+    si
+
+    class OK_REPLY is
+        ok: bool public;
+
+        init() is
+            ok = true;
+        si
+    si
+
+    class ERROR_REPLY is
+        ok: bool public;
+        error: string public;
+
+        init(error: string) is
+            ok = false;
+            self.error = error;
+        si
+    si
+
+    class EDIT_REPLY is
+        ok: bool public;
+        diagnostics: LIST[EDIT_DIAGNOSTIC] public;
+
+        init(diagnostics: LIST[EDIT_DIAGNOSTIC]) is
+            ok = true;
+            self.diagnostics = diagnostics;
+        si
+    si
+
+    class EDIT_DIAGNOSTIC is
+        severity: int public;
+        start_line: int public;
+        start_column: int public;
+        code: string public;
+        message: string public;
+
+        init(severity: int, start_line: int, start_column: int, code: string, message: string) is
+            self.severity = severity;
+            self.start_line = start_line;
+            self.start_column = start_column;
+            self.code = code;
+            self.message = message;
+        si
+    si
+
+    class INFO_REPLY is
+        ok: bool public;
+        project: string public;
+        warm: bool public;
+        pid: int? public;
+        compiler: string? public;
+        source_count: int public;
+
+        init(project: string, warm: bool, pid: int?, compiler: string?, source_count: int) is
+            ok = true;
+            self.project = project;
+            self.warm = warm;
+            self.pid = pid;
+            self.compiler = compiler;
+            self.source_count = source_count;
+        si
+    si
+
+    class RELEASE_REPLY is
+        ok: bool public;
+        released: bool public;
+
+        init(released: bool) is
+            ok = true;
+            self.released = released;
+        si
+    si
+
+    class HEAP_REPLY is
+        ok: bool public;
+        running: bool public;
+        healthy: bool public;
+
+        init(running: bool, healthy: bool) is
+            ok = true;
+            self.running = running;
+            self.healthy = healthy;
+        si
+    si
+si

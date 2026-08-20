@@ -74,31 +74,47 @@ Registering with Claude Code:
 claude mcp add ghul -- dotnet ghul-mcp --default-project <project-dir>
 ```
 
-## Diagnostics daemon
+## Pool host
 
-An alternative front end for callers that are shell scripts rather than MCP
-clients. It serves diagnostics for a single file over a Unix socket, backed by
-the same warm analyser pool the MCP server uses, so a script firing on every
-edit doesn't pay a cold analyser spawn each time:
+One analyser per project, shared by every client. The MCP server holds no
+analyser of its own: each tool call routes to the target project's pool
+host, a Unix-socket serve mode of this same binary, and the host keeps the
+project's analyser warm. A shell script - the Claude Code edit hook, say -
+feeds edits to the same host, so the analyser an editor session keeps
+current is the one queries are answered from, and the first full compile
+is paid once per project rather than once per client session:
 
 ```sh
-dotnet ghul-mcp --diagnostics-daemon /tmp/ghul-diag.sock --project path/to/project
+dotnet ghul-mcp --pool-host /tmp/ghul-pool.sock --project path/to/project
 ```
 
-One request per connection: two lines in (project directory, then a file path
-relative to it), one line per diagnostic back, then a blank line.
+Callers never launch the host by hand: every client - hook or MCP server -
+discovers a running host through the project-keyed socket path
+(`/tmp/ghul-mcp-pool-<md5 of the project path>.sock`) and connects to it,
+or starts one if nothing is listening. A client meeting a host from an
+incompatible ghul-mcp build (the hello handshake carries a protocol
+version) shuts it down as best it can and starts a fresh one.
 
-The daemon exits once it has gone `--diagnostics-daemon-idle-timeout` seconds
-without a connection (default 1800; `0` waits indefinitely), unlinking its
-socket on the way out. A warm pool holds an analyser per project, so one left
-over from an editing session that ended hours ago costs hundreds of megabytes
-to answer nothing.
+The wire shape is newline-delimited JSON, one request per line: a `hello`
+handshake first, then `call` (a tool name and its arguments, answered with
+the same rendered, stamped text the MCP tool returns), `edit` (a file
+relative to the project, answered with that file's diagnostics), `info`,
+`release`, `heap_check` and `shutdown`. Connections are served serially;
+warm requests are milliseconds.
 
-A caller decides whether to launch a daemon by connecting, not by testing
-whether the socket file exists. A daemon killed outright cannot unlink its
-socket, and the file it leaves behind is indistinguishable from a live one;
-treating existence as proof of life leaves diagnostics dead until the file is
-removed by hand. On a refused connection, unlink the socket and relaunch.
+The host exits once it has gone `--pool-host-idle-timeout` seconds without
+a connection (default 1800; `0` waits indefinitely), unlinking its socket
+on the way out. A warm analyser holds the project's sources in memory, so
+one left over from an editing session that ended hours ago costs hundreds
+of megabytes to answer nothing. The MCP server propagates its own
+`--pool-host-idle-timeout` to the hosts it spawns.
+
+A caller decides whether to launch a host by connecting, not by testing
+whether the socket file exists. A host killed outright cannot unlink its
+socket, and the file it leaves behind is indistinguishable from a live
+one; treating existence as proof of life leaves the socket dead until the
+file is removed by hand. On a refused connection, unlink the socket and
+relaunch.
 
 ## Query log
 

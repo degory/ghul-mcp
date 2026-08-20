@@ -125,6 +125,25 @@ namespace MCP is
             return 0;
         si
 
+        // Fetch a boolean-valued property; false if the element isn't an
+        // object, lacks the property, or the property isn't a boolean.
+        try_get_bool(element: JsonElement, name: string) -> bool static is
+            if element.value_kind != JsonValueKind.OBJECT then
+                return false;
+            fi
+
+            try
+                let property = element.get_property(name);
+
+                if property.value_kind == JsonValueKind.TRUE then
+                    return true;
+                fi
+            catch ex: Collections.KeyNotFoundException
+            yrt
+
+            return false;
+        si
+
         // Fetch a string-array property; an empty list if the element
         // isn't an object, lacks the property, the property isn't an array,
         // or an element isn't a string.

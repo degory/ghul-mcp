@@ -20,8 +20,12 @@ references, symbol search — by driving `ghul-compiler --analyse` through the
   dispatch log every tools/call is recorded to - see README).
 - `src/analyser/` — the semantic layer: `session.ghul` (spawns the target
   project's pinned compiler in analysis mode, seeds and freshens sources,
-  speaks the `ghul.analysis.protocol` wire), `tools.ghul` (maps MCP tool
-  calls onto analyser queries and renders responses as text).
+  speaks the `ghul.analysis.protocol` wire), `pool_host.ghul` + `host_client.ghul`
+  (the per-project Unix-socket host that owns the analyser, and the client
+  every caller - MCP server or edit hook - uses to reach or start it; see
+  README, "Pool host"), `tools.ghul` (maps MCP tool calls onto analyser
+  queries and renders responses as text; one shared tool table feeds both
+  the MCP proxies and the host-side dispatch).
 - `tests/smoke.sh` — end-to-end test driving the built server over stdio,
   including analyser tools against a scratch project copy with a
   mid-session file edit; this is what CI runs.
