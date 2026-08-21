@@ -47,6 +47,22 @@ namespace Analyser is
 
         CONNECT_POLL_MS: int static => 100;
 
+        SOCKET_DIRECTORY: string static => "/tmp";
+
+        SOCKET_PATTERN: string static => "ghul-mcp-pool-*.sock";
+
+        // Every pool-host socket on the machine, living or stale - the
+        // caller tells them apart by asking each host for its status.
+        discover_sockets() -> LIST[string] static is
+            let result = LIST[string]();
+
+            for socket_path in IO.Directory.get_files(SOCKET_DIRECTORY, SOCKET_PATTERN) do
+                result.add(socket_path);
+            od
+
+            return result;
+        si
+
         socket_path_for(project: string) -> string static is
             let builder = StringBuilder();
 
@@ -89,17 +105,44 @@ namespace Analyser is
         // The host's status for `project`, or null when no host is
         // listening. Never spawns anything, so status probes stay cheap.
         info_if_running(project: string) -> INFO_REPLY? static is
-            try
-                let reply = exchange(
-                    project,
-                    request_json(TRIVIAL_REQUEST("info")),
-                    0,
-                    false
-                );
+            return info_at(socket_path_for(project));
+        si
 
-                return JsonSerializer.deserialize[INFO_REPLY](reply.to_string(), WIRE.options);
+        // The host's status at an explicit socket path, or null when
+        // nothing is listening there or it does not answer.
+        info_at(socket_path: string) -> INFO_REPLY? static is
+            let probe = connect_with_handshake(socket_path);
+
+            if !probe? then
+                return null;
+            fi
+
+            let client = probe;
+
+            try
+                write_line(client, request_json(TRIVIAL_REQUEST("info")));
+
+                let reply = read_reply(client);
+
+                if !reply? then
+                    return null;
+                fi
+
+                let frame = parse(reply);
+
+                if !frame? then
+                    return null;
+                fi
+
+                if WIRE.try_get_bool(frame, "ok") != true then
+                    return null;
+                fi
+
+                return JsonSerializer.deserialize[INFO_REPLY](reply, WIRE.options);
             catch ex: Exception
                 return null;
+            finally
+                client.close();
             yrt
         si
 

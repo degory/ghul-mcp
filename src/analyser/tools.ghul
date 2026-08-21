@@ -279,6 +279,15 @@ namespace Analyser is
 
             server.add_tool(
                 TOOL(
+                    "pool_status",
+                    "machine-wide view of every analyser pool host: which projects are loaded, each analyser's compiler, sources and memory, host memory, and connection and request counters - including the hosts other sessions and the edit hook are using, and sockets left behind by dead hosts",
+                    "{{\"type\": \"object\", \"properties\": {{}}}}",
+                    arguments => POOL_STATUS.render()
+                )
+            );
+
+            server.add_tool(
+                TOOL(
                     "release_session",
                     "dispose the analyser for `project` if a pool host is keeping one warm. Use to free memory or to force a fresh spawn when an analyser gets into a bad state. Absent project releases the default project's.",
                     "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",

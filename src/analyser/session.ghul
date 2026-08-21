@@ -106,6 +106,18 @@ namespace Analyser is
         // fresh session, populated after the first sync_sources).
         known_source_count: int => _mtimes.count;
 
+        // The analyser's current working set in bytes, or null when no
+        // analyser process is running.
+        working_set: long? is
+            let p = _process;
+
+            if !p? \/ p.has_exited then
+                return null;
+            fi
+
+            return p.working_set64;
+        si
+
         // Compiler version the analyser advertised on its LISTEN frame,
         // or null before the first spawn.
         compiler_version: string? => _compiler_version;

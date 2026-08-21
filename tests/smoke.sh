@@ -39,7 +39,7 @@ echo "$out" | sed -n 2p | grep -q '"id":2,"result":{}' || fail "ping: empty resu
 echo "$out" | sed -n 3p | grep -q '"tools":\[{"name":"version"' || fail "tools/list: version tool first"
 echo "$out" | sed -n 3p | grep -q '"name":"diagnostics"' || fail "tools/list: diagnostics tool"
 echo "$out" | sed -n 3p | grep -q '"name":"symbols"' || fail "tools/list: symbols tool"
-echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 2.0.0 (no analyser session warm' || fail "tools/call: version text"
+echo "$out" | sed -n 4p | grep -q '"text":"ghul-mcp 2.1.0 (no analyser session warm' || fail "tools/call: version text"
 echo "$out" | sed -n 4p | grep -q '"isError":false' || fail "tools/call: isError false"
 echo "$out" | sed -n 5p | grep -q '"error":{"code":-32602,"message":"unknown tool: no-such-tool"}' || fail "unknown tool error"
 echo "$out" | sed -n 6p | grep -q '"error":{"code":-32601' || fail "unknown method error"
@@ -202,6 +202,15 @@ response 24 | grep -q 'main.ghul' || fail "2nd diagnostics: expected broken main
 # write to a dead pipe, and the replacement must be told about every source —
 # a fresh analyser knows nothing, so a session that only re-sent what had
 # changed since the last query would answer against an empty project.
+
+# The machine-wide view: with both scratch projects' hosts running, the
+# sweep must find this run's default project and its analyser.
+send '{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"pool_status","arguments":{}}}'
+await 25
+response 25 | grep -q "$tmp" || fail "pool_status: expected the default project in the sweep"
+response 25 | grep -q "ghul.compiler " || fail "pool_status: expected a compiler version in the sweep"
+response 25 | grep -q "requests" || fail "pool_status: expected request counters"
+response 25 | grep -q "analyser:" || fail "pool_status: expected an analyser line"
 
 send '{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"sessions","arguments":{}}}'
 await 50
@@ -376,6 +385,11 @@ echo "$resp" | grep -q 'escapes the project directory' || fail "pool host: expec
 
 resp=$(host_request '{"op":"bogus"}')
 echo "$resp" | grep -q 'unknown op' || fail "pool host: expected an unknown-op rejection, got: $resp"
+
+# the CLI sweep sees the same host
+status_out=$(dotnet "$server" --pool-status)
+echo "$status_out" | grep -q "$tmp" || fail "pool_status CLI: expected the host's project, got: $status_out"
+echo "$status_out" | grep -q "connections" || fail "pool_status CLI: expected counters"
 
 kill "$host_pid" 2>/dev/null || true
 wait "$host_pid" 2>/dev/null || true
