@@ -25,6 +25,7 @@ namespace Analyser is
     use IO.StreamWriter;
     use IO.Std;
 
+    use MCP.QUERY_LOG;
     use MCP.WIRE;
 
     // The per-project pool host: a Unix-domain-socket serve mode standing in
@@ -78,14 +79,30 @@ namespace Analyser is
         _handlers: MAP[string, (ANALYSER_SESSION, JsonElement) -> string];
         _session: ANALYSER_SESSION?;
         _shutdown: bool;
+        _query_log: QUERY_LOG;
+        _started: System.DateTime;
+        _last_activity: System.DateTime;
+        _connections: long;
+        _requests: long;
+        _errors: long;
+        _calls: long;
+        _edits: long;
 
-        init(project: string, idle_timeout_seconds: int, server_version: string) is
+        init(project: string, idle_timeout_seconds: int, server_version: string, query_log_path: string?) is
             _project = Path.get_full_path(project);
             _idle_timeout_seconds = idle_timeout_seconds;
             _server_version = server_version;
             _handlers = ANALYSER_TOOLS.handlers();
             _session = null;
             _shutdown = false;
+            _query_log = QUERY_LOG(query_log_path);
+            _started = System.DateTime.utc_now;
+            _last_activity = _started;
+            _connections = 0L;
+            _requests = 0L;
+            _errors = 0L;
+            _calls = 0L;
+            _edits = 0L;
         si
 
         run(socket_path: string) is
@@ -199,6 +216,8 @@ namespace Analyser is
                     return;
                 fi
 
+                _connections = _connections + 1L;
+
                 writer.write_line(
                     reply_json(HELLO_REPLY(true, PROTOCOL_VERSION, _server_version))
                 );
@@ -232,16 +251,56 @@ namespace Analyser is
         si
 
         handle_request(line: string) -> string is
+            let stopwatch = System.Diagnostics.Stopwatch.start_new();
+
+            _requests = _requests + 1L;
+            _last_activity = System.DateTime.utc_now;
+
             let frame = parse_frame(line);
 
+            let op: string? mut = null;
+
+            if frame? then
+                op = WIRE.try_get_string(frame, "op");
+            fi
+
+            let reply = dispatch_request(frame);
+
+            // The front end already logs every MCP tool call, so the host
+            // logs only what no other process sees: edits from the hook,
+            // and failures of any op.
+            let is_error = reply.starts_with("{{\"ok\":false");
+
+            if is_error \/ op? /\ op =~ "edit" then
+                _query_log.log_op(
+                    op ?? "parse",
+                    "",
+                    _status_of(is_error),
+                    stopwatch.elapsed_milliseconds,
+                    reply
+                );
+            fi
+
+            return reply;
+        si
+
+        _status_of(is_error: bool) -> string is
+            if is_error then
+                return "error";
+            fi
+
+            return "ok";
+        si
+
+        dispatch_request(frame: JsonElement?) -> string is
             if !frame? then
-                return error_json("could not parse the request");
+                return _error_counted("could not parse the request");
             fi
 
             let op = WIRE.try_get_string(frame, "op");
 
             if !op? then
-                return error_json("no op in the request");
+                return _error_counted("no op in the request");
             fi
 
             if op =~ "call" then
@@ -260,7 +319,13 @@ namespace Analyser is
                 return reply_json(OK_REPLY());
             fi
 
-            return error_json("unknown op: {op}");
+            return _error_counted("unknown op: {op}");
+        si
+
+        _error_counted(message: string) -> string is
+            _errors = _errors + 1L;
+
+            return error_json(message);
         si
 
         handle_call(frame: JsonElement) -> string is
@@ -282,6 +347,8 @@ namespace Analyser is
 
             try
                 let result = ANALYSER_TOOLS.stamped_call(session(), _handlers[tool], arguments);
+
+                _calls = _calls + 1L;
 
                 return reply_json(CALL_REPLY(result));
             catch ex: Exception
@@ -324,6 +391,8 @@ namespace Analyser is
                     fi
                 od
 
+                _edits = _edits + 1L;
+
                 return reply_json(EDIT_REPLY(result));
             catch ex: Exception
                 return error_json("{ex.get_type().name}: {ex.message}");
@@ -335,15 +404,32 @@ namespace Analyser is
             let pid: int? mut = null;
             let compiler: string? mut = null;
             let source_count mut = 0;
+            let analyser_working_set: long? mut = null;
 
             if let session: ANALYSER_SESSION = _session then
                 warm = true;
                 pid = session.process_id;
                 compiler = session.compiler_version;
                 source_count = session.known_source_count;
+                analyser_working_set = session.working_set;
             fi
 
-            return reply_json(INFO_REPLY(_project, warm, pid, compiler, source_count));
+            let now = System.DateTime.utc_now;
+
+            let reply = INFO_REPLY(_project, warm, pid, compiler, source_count);
+
+            reply.host_pid = System.Environment.process_id;
+            reply.uptime_seconds = cast int(now.subtract(_started).total_seconds);
+            reply.idle_seconds = cast int(now.subtract(_last_activity).total_seconds);
+            reply.host_working_set = System.Diagnostics.Process.get_current_process().working_set64;
+            reply.analyser_working_set = analyser_working_set;
+            reply.connections = _connections;
+            reply.requests = _requests;
+            reply.errors = _errors;
+            reply.calls = _calls;
+            reply.edits = _edits;
+
+            return reply_json(reply);
         si
 
         handle_release() -> string is
@@ -503,6 +589,19 @@ namespace Analyser is
         pid: int? public;
         compiler: string? public;
         source_count: int public;
+
+        // Observability fields, additive to the protocol: a host from
+        // before they existed reports their zero values.
+        host_pid: int public;
+        uptime_seconds: int public;
+        idle_seconds: int public;
+        host_working_set: long public;
+        analyser_working_set: long? public;
+        connections: long public;
+        requests: long public;
+        errors: long public;
+        calls: long public;
+        edits: long public;
 
         init(project: string, warm: bool, pid: int?, compiler: string?, source_count: int) is
             ok = true;

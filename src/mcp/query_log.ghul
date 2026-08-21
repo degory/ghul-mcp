@@ -58,6 +58,24 @@ namespace MCP is
             _append(START_ENTRY(_now(), _pid, server, version, default_project ?? ""));
         si
 
+        // Pool-host dispatches carry no MCP arguments object; `detail`
+        // stands in where the arguments head would go (the tool name for a
+        // call, the file for an edit).
+        log_op(op: string, detail: string, status: string, elapsed_ms: long, result: string) is
+            _append(
+                CALL_ENTRY(
+                    _now(),
+                    _pid,
+                    op,
+                    detail,
+                    status,
+                    elapsed_ms,
+                    result.length,
+                    _head(result)
+                )
+            );
+        si
+
         log_call(tool: string, arguments: JsonElement, status: string, elapsed_ms: long, result: string) is
             _append(
                 CALL_ENTRY(

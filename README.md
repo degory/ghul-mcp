@@ -116,6 +116,22 @@ one; treating existence as proof of life leaves the socket dead until the
 file is removed by hand. On a refused connection, unlink the socket and
 relaunch.
 
+## Observability
+
+`pool_status` (an MCP tool, or `dotnet ghul-mcp --pool-status` from a shell)
+sweeps every `/tmp/ghul-mcp-pool-*.sock`, asks each host for its status, and
+reports per project: the host pid, uptime and idle time, connection and
+request counters split by op, host and analyser memory, and the analyser's
+compiler, pid and source count. Sockets nothing answers are reported as
+stale. Discovery is the directory scan - the socket per project is the
+registry - so one call sees hosts used by other sessions, by the edit hook,
+and left behind by dead hosts alike.
+
+The shared query log (`~/.local/state/ghul-mcp/query-log.jsonl`) records the
+host side too: every `edit` a hook feeds an analyser, and every failed op,
+one JSON line each alongside the MCP tool dispatches, carrying the host's
+pid so the two producers can be told apart.
+
 ## Query log
 
 The server appends one JSON line per `tools/call` dispatch to a query log:

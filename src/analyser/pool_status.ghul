@@ -1,0 +1,93 @@
+namespace Analyser is
+    use System.Exception;
+
+    use System.Text.StringBuilder;
+
+    use Collections.LIST;
+
+    // Machine-wide view of the pool hosts: every project-keyed socket under
+    // /tmp is asked for its status, so one call sees the hosts this session
+    // is using, the hosts other sessions are using, and the hosts the edit
+    // hook keeps fed - plus the sockets left behind by hosts that died
+    // without unlinking. Discovery is a directory scan rather than a
+    // registry because the architecture has no central process to keep one;
+    // the socket per project is the registry.
+    class POOL_STATUS is
+        render() -> string static is
+            let builder = StringBuilder();
+            let hosts mut = 0;
+
+            for socket_path in HOST_CLIENT.discover_sockets() do
+                let info = HOST_CLIENT.info_at(socket_path);
+
+                if !info? then
+                    builder.append("stale socket: {socket_path} (nothing is listening)\n");
+                    continue;
+                fi
+
+                hosts = hosts + 1;
+
+                builder.append("{info.project}\n");
+                builder.append("  host pid {info.host_pid}, up {_duration(info.uptime_seconds)}, last request {_duration(info.idle_seconds)} ago\n");
+                builder.append(
+                    "  {info.connections} connections, {info.requests} requests "
+                    "({info.calls} calls, {info.edits} edits), {info.errors} errors\n"
+                );
+                builder.append("  host memory {_megabytes(info.host_working_set)}\n");
+
+                if info.warm then
+                    let analyser_memory: string =
+                        if info.analyser_working_set? then
+                            ", {_megabytes(info.analyser_working_set)}"
+                        else
+                            ""
+                        fi;
+
+                    let compiler = info.compiler;
+                    let compiler_text =
+                        if compiler? then
+                            "ghul.compiler {compiler}"
+                        else
+                            "compiler version unknown"
+                        fi;
+
+                    let pid = info.pid;
+                    let pid_text =
+                        if pid? then
+                            "pid {pid}"
+                        else
+                            "not running"
+                        fi;
+
+                    builder.append(
+                        "  analyser: {compiler_text}, {pid_text}, {info.source_count} sources{analyser_memory}\n"
+                    );
+                else
+                    builder.append("  analyser: none warm\n");
+                fi
+            od
+
+            if hosts == 0 then
+                return "no pool hosts are running";
+            fi
+
+            return builder.to_string();
+        si
+
+        _duration(seconds: int) -> string static is
+            if seconds >= 3600 then
+                return "{seconds / 3600}h {(seconds % 3600) / 60}m";
+            fi
+
+            if seconds >= 60 then
+                return "{seconds / 60}m {seconds % 60}s";
+            fi
+
+            return "{seconds}s";
+        si
+
+        _megabytes(bytes: long) -> string static is
+            return "{bytes / (1024L * 1024L)} MB";
+        si
+    si
+si
