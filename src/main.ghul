@@ -1,6 +1,6 @@
 use IO.Std;
 
-server_version: string => "2.1.0";
+server_version: string => "2.2.0";
 
 // The server version plus, when the default project's pool host has a warm
 // analyser, the compiler version it advertised at spawn. Probing never
