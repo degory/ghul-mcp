@@ -52,7 +52,7 @@ namespace Analyser is
         _project_directory: string;
         _options: JsonSerializerOptions;
         _process: Process?;
-        _response_file: string?;
+        _temp_directory: string?;
         _compiler_version: string?;
         _mtimes: MAP[string, System.DateTime];
         _stderr_capture: StringBuilder;
@@ -83,6 +83,7 @@ namespace Analyser is
             // System.Text.Json skips by default.
             _options.include_fields = true;
 
+            _temp_directory = null;
             _mtimes = MAP[string, System.DateTime]();
             _stderr_capture = StringBuilder();
             _last_hints_for = LIST[string]();
@@ -518,7 +519,126 @@ namespace Analyser is
             od
         si
 
-        start() is
+        // A directory of this session's own, holding the files it and the
+        // build generate on the way to a compiler command line. They used to
+        // be written into the project, where nothing owned them: two sessions
+        // on one project overwrote each other's, and anything outliving a
+        // crash stayed in the checkout until someone noticed it. Here a crash
+        // leaves them where the system reclaims them.
+        //
+        // Created on first use, so a project that never spawns an analyser
+        // never makes one.
+        temp_directory() -> string is
+            if let directory: string = _temp_directory then
+                return directory;
+            fi
+
+            let directory = Path.combine(Path.get_temp_path(), "ghul-mcp-{System.Guid.new_guid()}");
+
+            Directory.create_directory(directory);
+
+            _temp_directory = directory;
+
+            return directory;
+        si
+
+        // Ask MSBuild to resolve the project's compiler options and reference
+        // assemblies into a response file. The target ships in ghul.runtime
+        // 14.3.0+'s build targets (degory/ghul#2132) and supersedes the two
+        // JSON targets, which published the same two halves in a format
+        // nothing else speaks.
+        //
+        // Whether the file is there afterwards is what the caller reads, so
+        // this reports nothing that would be noise: a project pinned to an
+        // older ghul.runtime has no such target, MSBuild says so as MSB4057,
+        // and start() falls back to the JSON targets that runtime does have.
+        // Any other failure is a build that went wrong on a project that does
+        // have the target, and the fallback's own message would misattribute
+        // it to a missing or unrestored project - so it is reported here,
+        // where what actually happened is still in hand.
+        generate_response_file(path: string) is
+            let start_info = ProcessStartInfo();
+
+            start_info.file_name = "dotnet";
+            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulResponseFile -p:GhulResponseFile=\"{path}\"";
+            start_info.working_directory = _project_directory;
+
+            start_info.use_shell_execute = false;
+            start_info.redirect_standard_output = true;
+            start_info.redirect_standard_error = true;
+
+            let process = Process.start(start_info);
+
+            if !process? then
+                return;
+            fi
+
+            let out = process.standard_output.read_to_end();
+            let err = process.standard_error.read_to_end();
+
+            if !process.wait_for_exit(120000) then
+                Std.error.write_line("ghul-mcp: timed out resolving {_project_directory} into a response file");
+                return;
+            fi
+
+            if process.exit_code == 0 \/ out.contains("MSB4057") \/ err.contains("MSB4057") then
+                return;
+            fi
+
+            Std.error.write_line(
+                "ghul-mcp: could not resolve {_project_directory} into a response file "
+                "(dotnet build -t:GenerateGhulResponseFile exited {process.exit_code}); "
+                "falling back to .assemblies.json"
+            );
+
+            Std.error.write_line(out);
+            Std.error.write_line(err);
+        si
+
+        // Read the build's response file into the analyser's argument list.
+        // Each line is one flag with its argument, so a line is tokenized
+        // whole and never read across lines.
+        //
+        // The compiler follows a nested @<path> itself, so this could have
+        // been one argument naming the file. It is read instead so that a
+        // reference the build could not produce can be withheld: the analyser
+        // reads each -a eagerly and stops at the first one that is not there.
+        read_response_file(path: string, arguments: LIST[string]) is
+            for line in File.read_all_lines(path) do
+                let trimmed = line.trim();
+
+                if trimmed.length == 0 then
+                    continue;
+                fi
+
+                add_arguments(_tokenize_quoted(trimmed), arguments);
+            od
+        si
+
+        // Add one flag and its argument, unless it is a -a naming an assembly
+        // that is not there. Passing the compiler a reference path that does
+        // not resolve is the client's mistake and it reports it as one, so a
+        // project whose references have not all been built would take the
+        // analyser down with it. Withholding leaves analysis incomplete until
+        // they appear, which is what an editor over a half-built tree needs.
+        add_arguments(tokens: LIST[string], arguments: LIST[string]) is
+            if tokens.count > 1 /\ tokens[0] =~ "-a" /\ !File.exists(tokens[1]) then
+                Std.error.write_line(
+                    "ghul-mcp: referenced assembly {tokens[1]} is not present yet, "
+                    "analysis will be incomplete until it is built"
+                );
+
+                return;
+            fi
+
+            for token in tokens do
+                arguments.add(token);
+            od
+        si
+
+        // The reference paths and options as the two JSON targets published
+        // them, for a project pinned to a ghul.runtime older than 14.3.0.
+        read_json_configuration(arguments: LIST[string]) is
             let assemblies_json_path = Path.combine(_project_directory, ".assemblies.json");
 
             // Unconditionally, not just when the file is absent: it is a
@@ -557,11 +677,13 @@ namespace Analyser is
             assert assemblies_file? /\ assemblies_file.assemblies? else
                 Exception("could not read an assemblies list from {assemblies_json_path}");
 
-            let arguments = LIST[string]();
-
             for assembly in assemblies_file.assemblies do
-                arguments.add("-a");
-                arguments.add(assembly);
+                let assembly_tokens = LIST[string]();
+
+                assembly_tokens.add("-a");
+                assembly_tokens.add(assembly);
+
+                add_arguments(assembly_tokens, arguments);
             od
 
             // Match the command-line build: forward the ghulproj's own
@@ -572,10 +694,24 @@ namespace Analyser is
             for option in resolve_compiler_options() do
                 arguments.add(option);
             od
+        si
+
+        start() is
+            let arguments = LIST[string]();
+
+            let project_response_file = Path.combine(temp_directory(), "project.rsp");
+
+            generate_response_file(project_response_file);
+
+            if File.exists(project_response_file) then
+                read_response_file(project_response_file, arguments);
+            else
+                read_json_configuration(arguments);
+            fi
 
             arguments.add("-A");
 
-            let response_file = Path.combine(_project_directory, ".ghul-mcp-{System.Guid.new_guid()}.rsp");
+            let response_file = Path.combine(temp_directory(), "analysis.rsp");
             let line = StringBuilder();
 
             for argument in arguments do
@@ -583,7 +719,6 @@ namespace Analyser is
             od
 
             File.write_all_text(response_file, line.to_string());
-            _response_file = response_file;
 
             let start_info = ProcessStartInfo();
 
@@ -1186,13 +1321,14 @@ namespace Analyser is
             _process = null;
             _mtimes.clear();
 
-            if let response_file: string = _response_file then
+            // Takes the analyser's response file and the build's with it.
+            if let directory: string = _temp_directory then
                 try
-                    File.delete(response_file);
+                    Directory.delete(directory, true);
                 catch ex: Exception
                 yrt
 
-                _response_file = null;
+                _temp_directory = null;
             fi
         si
 
