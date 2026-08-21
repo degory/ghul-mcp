@@ -548,10 +548,14 @@ namespace Analyser is
         // JSON targets, which published the same two halves in a format
         // nothing else speaks.
         //
-        // Silent on failure, and whether the file is there afterwards is what
-        // the caller reads: a project pinned to an older ghul.runtime has no
-        // such target, which is ordinary rather than a fault, and start()
-        // falls back to the JSON targets that runtime does have.
+        // Whether the file is there afterwards is what the caller reads, so
+        // this reports nothing that would be noise: a project pinned to an
+        // older ghul.runtime has no such target, MSBuild says so as MSB4057,
+        // and start() falls back to the JSON targets that runtime does have.
+        // Any other failure is a build that went wrong on a project that does
+        // have the target, and the fallback's own message would misattribute
+        // it to a missing or unrestored project - so it is reported here,
+        // where what actually happened is still in hand.
         generate_response_file(path: string) is
             let start_info = ProcessStartInfo();
 
@@ -569,10 +573,26 @@ namespace Analyser is
                 return;
             fi
 
-            process.standard_output.read_to_end();
-            process.standard_error.read_to_end();
+            let out = process.standard_output.read_to_end();
+            let err = process.standard_error.read_to_end();
 
-            process.wait_for_exit(120000);
+            if !process.wait_for_exit(120000) then
+                Std.error.write_line("ghul-mcp: timed out resolving {_project_directory} into a response file");
+                return;
+            fi
+
+            if process.exit_code == 0 \/ out.contains("MSB4057") \/ err.contains("MSB4057") then
+                return;
+            fi
+
+            Std.error.write_line(
+                "ghul-mcp: could not resolve {_project_directory} into a response file "
+                "(dotnet build -t:GenerateGhulResponseFile exited {process.exit_code}); "
+                "falling back to .assemblies.json"
+            );
+
+            Std.error.write_line(out);
+            Std.error.write_line(err);
         si
 
         // Read the build's response file into the analyser's argument list.
