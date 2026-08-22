@@ -145,8 +145,39 @@ namespace Analyser is
         // would include. Falls back to a whole-tree walk if the .ghulproj
         // can't be read - old repos, unusual layouts. Deduped so a source
         // matched by two globs is only sent once.
+        // The source globs the build published for this project, or null when
+        // it did not - a ghul.runtime older than 14.4.0, or a project whose
+        // declarations are all conditional. One pattern per line, as written
+        // rather than as expanded.
+        published_source_globs() -> LIST[string]? is
+            let path = Path.combine(temp_directory(), "source-globs.txt");
+
+            if !File.exists(path) then
+                return null;
+            fi
+
+            let globs = LIST[string]();
+
+            for line in File.read_all_lines(path) do
+                let trimmed = line.trim();
+
+                if trimmed.length > 0 then
+                    globs.add(trimmed);
+                fi
+            od
+
+            if globs.count == 0 then
+                return null;
+            fi
+
+            return globs;
+        si
+
         find_sources() -> LIST[string] is
-            let globs = load_ghulproj_source_globs();
+            // The build's answer first: it sees a shared Directory.Build.props
+            // and knows which patterns it actually compiles, where the project
+            // file parse below sees neither.
+            let globs = published_source_globs() ?? load_ghulproj_source_globs();
 
             let seen = Collections.SET[string]();
             let result = LIST[string]();
@@ -556,11 +587,11 @@ namespace Analyser is
         // have the target, and the fallback's own message would misattribute
         // it to a missing or unrestored project - so it is reported here,
         // where what actually happened is still in hand.
-        generate_response_file(path: string) is
+        generate_response_file(path: string, source_globs_path: string) is
             let start_info = ProcessStartInfo();
 
             start_info.file_name = "dotnet";
-            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulResponseFile -p:GhulResponseFile=\"{path}\"";
+            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulResponseFile -p:GhulResponseFile=\"{path}\" -p:GhulSourceGlobsFile=\"{source_globs_path}\"";
             start_info.working_directory = _project_directory;
 
             start_info.use_shell_execute = false;
@@ -700,8 +731,9 @@ namespace Analyser is
             let arguments = LIST[string]();
 
             let project_response_file = Path.combine(temp_directory(), "project.rsp");
+            let source_globs_path = Path.combine(temp_directory(), "source-globs.txt");
 
-            generate_response_file(project_response_file);
+            generate_response_file(project_response_file, source_globs_path);
 
             if File.exists(project_response_file) then
                 read_response_file(project_response_file, arguments);
