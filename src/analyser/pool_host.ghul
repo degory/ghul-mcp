@@ -393,7 +393,10 @@ namespace Analyser is
 
                 _edits = _edits + 1L;
 
-                return reply_json(EDIT_REPLY(result));
+                let reply = EDIT_REPLY(result);
+                reply.compiler_version = session().compiler_version;
+
+                return reply_json(reply);
             catch ex: Exception
                 return error_json("{ex.get_type().name}: {ex.message}");
             yrt
@@ -560,9 +563,15 @@ namespace Analyser is
         ok: bool public;
         diagnostics: LIST[EDIT_DIAGNOSTIC] public;
 
+        // Version of the ghul.compiler the analyser answering this edit was
+        // built from, additive to the protocol: a host from before it
+        // existed reports null and clients skip the stamp.
+        compiler_version: string? public;
+
         init(diagnostics: LIST[EDIT_DIAGNOSTIC]) is
             ok = true;
             self.diagnostics = diagnostics;
+            self.compiler_version = null;
         si
     si
 
