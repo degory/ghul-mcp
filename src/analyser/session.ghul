@@ -35,6 +35,12 @@ namespace Analyser is
     class GHUL_OPTIONS_FILE is
         options: string public;
 
+        // Optional analyser compiler override, emitted by the
+        // GenerateGhulOptionsJson target once ghul.runtime carries it.
+        // Absent on every project today; the hand-parsed property read in
+        // resolve_analyser_compiler_dll covers the meantime.
+        analyser_compiler: string? public;
+
         // JsonSerializer.deserialize bypasses this and assigns the field by
         // reflection.
         @suppress("field-definite-assignment")
@@ -54,6 +60,23 @@ namespace Analyser is
         _process: Process?;
         _temp_directory: string?;
         _compiler_version: string?;
+
+        // The DLL this project opts into for analysis via the
+        // GhulAnalyserCompiler property, resolved once per spawn. Null when
+        // unset: the spawn then uses the project's pinned ghul.compiler tool
+        // as before.
+        _analyser_compiler_dll: string?;
+
+        // Identity of everything that picked the answering compiler, so a
+        // warm session can be recycled when it changes underneath us.
+        _compiler_fingerprint: string?;
+
+        // Throttles the drift check above to at most one run per interval
+        // on a warm session: every query path funnels through
+        // ensure_spawned, and a hover burst must not pay a manifest walk
+        // per request.
+        _next_fingerprint_check: System.DateTime;
+
         _mtimes: MAP[string, System.DateTime];
         _stderr_capture: StringBuilder;
         _last_hints_for: LIST[string];
@@ -75,6 +98,8 @@ namespace Analyser is
         // hovers doesn't grow unbounded between the fallback samples.
         HEAP_CHECK_EVERY: int static => 20;
 
+        FINGERPRINT_CHECK_INTERVAL_SECONDS: double static => 1.0D;
+
         init(project_directory: string) is
             _project_directory = Path.get_full_path(project_directory);
             _options = JsonSerializerOptions();
@@ -89,6 +114,7 @@ namespace Analyser is
             _last_hints_for = LIST[string]();
             _query_count = 0L;
             last_used_order = 0L;
+            _next_fingerprint_check = System.DateTime.min_value;
         si
 
         // OS process id of the running analyser, or null if it hasn't
@@ -288,6 +314,178 @@ namespace Analyser is
             fi
 
             return load_ghulproj_compiler_options();
+        si
+
+        // The compiler DLL this project opts into for analysis via an
+        // optional GhulAnalyserCompiler MSBuild property, or null to use the
+        // project's pinned ghul.compiler tool as before. Read from
+        // .ghul-options.json when the project's ghul.runtime emits it there
+        // (evaluated, conditions applied); otherwise hand-read as the first
+        // unconditional property element in the project's .ghulproj, then in
+        // Directory.Build.props files walking up from the project directory,
+        // nearest file winning and the walk stopping at the filesystem root.
+        // The hand read cannot evaluate imports or conditions - it skips
+        // Condition-guarded elements, which is also how a props file scopes
+        // itself away for chosen projects - but it substitutes
+        // $(MSBuildThisFileDirectory) and $(MSBuildProjectDirectory), the
+        // two tokens a plain path-valued property needs.
+        resolve_analyser_compiler_dll() -> string? is
+            let options_json_path = Path.combine(_project_directory, ".ghul-options.json");
+
+            if File.exists(options_json_path) then
+                try
+                    if let options_file: GHUL_OPTIONS_FILE = JsonSerializer.deserialize[GHUL_OPTIONS_FILE](File.read_all_text(options_json_path), _options) then
+                        if let value: string = options_file.analyser_compiler then
+                            if value.trim().length > 0 then
+                                return Path.get_full_path(Path.combine(_project_directory, value));
+                            fi
+                        fi
+                    fi
+                catch ex: Exception
+                yrt
+            fi
+
+            let projects = Directory.get_files(_project_directory, "*.ghulproj");
+
+            if projects.count == 1 then
+                if let value = _read_analyser_compiler_property(projects[0], _project_directory) then
+                    return value;
+                fi
+            fi
+
+            // MSBuild probes the project directory itself for
+            // Directory.Build.props before its ancestors.
+            if let value = _read_analyser_compiler_property(Path.combine(_project_directory, "Directory.Build.props"), _project_directory) then
+                return value;
+            fi
+
+            let dir mut = _project_directory;
+
+            while true do
+                let parent = Path.get_full_path(Path.combine(dir, ".."));
+
+                if parent =~ dir then
+                    return null;
+                fi
+
+                dir = parent;
+
+                if let value = _read_analyser_compiler_property(Path.combine(dir, "Directory.Build.props"), dir) then
+                    return value;
+                fi
+            od
+
+            return null;
+        si
+
+        // One file's unconditional GhulAnalyserCompiler property, resolved
+        // against base_directory, or null when the file has none (or cannot
+        // be read).
+        _read_analyser_compiler_property(path: string, base_directory: string) -> string? is
+            if !File.exists(path) then
+                return null;
+            fi
+
+            try
+                let document = System.Xml.Linq.XDocument.load(path);
+                let root = document.root;
+
+                if !root? then
+                    return null;
+                fi
+
+                // Property evaluation is sequential: a later unconditional
+                // assignment overwrites an earlier one, so the LAST
+                // unconditioned element in document order is the value the
+                // build would honour - not the first.
+                let found: string? mut = null;
+
+                for element in root.descendants(System.Xml.Linq.XName.get("GhulAnalyserCompiler")) do
+                    let condition_attr = element.attribute(System.Xml.Linq.XName.get("Condition"));
+
+                    if !condition_attr? then
+                        // Substitute against a slash-terminated base so a
+                        // value like $(MSBuildThisFileDirectory)../x.dll
+                        // cannot glue the ".." onto the last segment.
+                        let base_slashed =
+                            if base_directory.ends_with("/") then
+                                base_directory
+                            else
+                                "{base_directory}/"
+                            fi;
+
+                        let project_slashed =
+                            if _project_directory.ends_with("/") then
+                                _project_directory
+                            else
+                                "{_project_directory}/"
+                            fi;
+
+                        let value = element.value.replace("$(MSBuildThisFileDirectory)", base_slashed).replace("$(MSBuildProjectDirectory)", project_slashed);
+
+                        if value.trim().length > 0 then
+                            found = value;
+                        fi
+                    fi
+                od
+
+                if let value: string = found then
+                    return Path.get_full_path(value);
+                fi
+            catch ex: Exception
+            yrt
+
+            return null;
+        si
+
+        // Identity of everything that decides which compiler binary answers:
+        // the resolved override's path, write time and length when one is
+        // configured, otherwise the bytes of the dotnet local-tool manifest
+        // the spawn would resolve through, else a constant. A warm session
+        // whose current fingerprint differs from its spawn-time one gets
+        // recycled rather than kept answering on a moved compiler.
+        compute_compiler_fingerprint() -> string is
+            // Re-resolve rather than read the field cached at spawn time:
+            // the drift check exists precisely to notice when the property
+            // now points somewhere else, and a cached path would make a
+            // re-pointed property invisible.
+            if let path: string = resolve_analyser_compiler_dll() then
+                try
+                    if !File.exists(path) then
+                        return "dll-missing {path}";
+                    fi
+
+                    let stamp = File.get_last_write_time_utc(path);
+
+                    return "dll {path} {stamp.ticks}";
+                catch ex: Exception
+                    return "dll-unreadable {path}";
+                yrt
+            fi
+
+            let dir mut = _project_directory;
+
+            while true do
+                let candidate = Path.combine(dir, ".config/dotnet-tools.json");
+
+                if File.exists(candidate) then
+                    try
+                        return "manifest {candidate} {File.read_all_text(candidate)}";
+                    catch ex: Exception
+                        return "manifest-unreadable {candidate}";
+                    yrt
+                fi
+
+                let parent = Path.get_full_path(Path.combine(dir, ".."));
+
+                if parent =~ dir then
+                    return "none";
+                fi
+
+                dir = parent;
+            od
+
+            return "none";
         si
 
         // Ask MSBuild to write the project's fully-resolved compiler flags to
@@ -754,8 +952,24 @@ namespace Analyser is
 
             let start_info = ProcessStartInfo();
 
+            _analyser_compiler_dll = resolve_analyser_compiler_dll();
+
+            let program mut = "ghul-compiler";
+
+            if let dll: string = _analyser_compiler_dll then
+                if File.exists(dll) then
+                    program = "\"{dll}\"";
+                else
+                    // The tree build the property points at is absent (a
+                    // worktree between publishes, say). The pinned tool is
+                    // still better than a dead session; the version stamp on
+                    // replies makes the substitution visible.
+                    Std.error.write_line("ghul-mcp: analyser compiler override not found ({dll}); using the pinned ghul.compiler tool");
+                fi
+            fi
+
             start_info.file_name = "dotnet";
-            start_info.arguments = "ghul-compiler @\"{response_file}\"";
+            start_info.arguments = "{program} @\"{response_file}\"";
             start_info.working_directory = _project_directory;
 
             start_info.use_shell_execute = false;
@@ -774,6 +988,8 @@ namespace Analyser is
             fi
 
             _process = started;
+
+            _compiler_fingerprint = compute_compiler_fingerprint();
 
             // Drain stderr in the background so a chatty analyser doesn't
             // fill its stderr pipe and block.
@@ -953,6 +1169,22 @@ namespace Analyser is
         // fire-and-forget setup (SET_OPEN_FILES etc.) before any EDIT can
         // interleave in the correct order.
         ensure_spawned() is
+            // Recycle a warm session whose compiler input moved underneath
+            // it - a republished tree build, a re-pointed manifest - rather
+            // than keep answering on the old compiler until something calls
+            // release_session. Throttled to at most one drift check per
+            // interval: every query path funnels through here, and a hover
+            // burst must not pay a manifest walk per request.
+            let now = System.DateTime.utc_now;
+
+            if is_running /\ _compiler_fingerprint? /\ now > _next_fingerprint_check then
+                _next_fingerprint_check = now.add_seconds(FINGERPRINT_CHECK_INTERVAL_SECONDS);
+
+                if _compiler_fingerprint !~ compute_compiler_fingerprint() then
+                    dispose_process();
+                fi
+            fi
+
             if !is_running then
                 dispose_process();
                 start();
