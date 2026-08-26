@@ -156,3 +156,7 @@ stderr.
 dotnet tool restore
 ./tests/smoke.sh
 ```
+
+## Issues
+
+[View open issues](https://github.com/degory/ghul/issues?q=is%3Aopen+is%3Aissue+label%3Aghul-mcp) or [raise a new one](https://github.com/degory/ghul/issues/new?labels=ghul-mcp).
