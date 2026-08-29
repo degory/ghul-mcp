@@ -1,26 +1,26 @@
 namespace Analyser is
-    use System.Exception;
-    use System.Diagnostics.Process;
-    use System.Diagnostics.ProcessStartInfo;
-    use System.Text.StringBuilder;
-    use System.Text.UTF8Encoding;
-    use System.Text.Json.JsonSerializer;
-    use System.Text.Json.JsonSerializerOptions;
+    use System.Exception
+    use System.Diagnostics.Process
+    use System.Diagnostics.ProcessStartInfo
+    use System.Text.StringBuilder
+    use System.Text.UTF8Encoding
+    use System.Text.Json.JsonSerializer
+    use System.Text.Json.JsonSerializerOptions
 
-    use Collections.LIST;
-    use Collections.MAP;
+    use Collections.LIST
+    use Collections.MAP
 
-    use IO.Directory;
-    use IO.File;
-    use IO.Path;
-    use IO.Std;
+    use IO.Directory
+    use IO.File
+    use IO.Path
+    use IO.Std
 
-    use Analysis.Protocol.EDIT_FILE;
-    use Analysis.Protocol.Request;
-    use Analysis.Protocol.Response;
+    use Analysis.Protocol.EDIT_FILE
+    use Analysis.Protocol.Request
+    use Analysis.Protocol.Response
 
     class ASSEMBLIES_FILE is
-        assemblies: LIST[string] public;
+        assemblies: LIST[string] public
 
         // JsonSerializer.deserialize bypasses this and assigns the field by
         // reflection.
@@ -33,13 +33,13 @@ namespace Analyser is
     // build itself would pass, as one whitespace-separated (quote-aware)
     // string - conditions applied, properties evaluated. See degory/ghul#2090.
     class GHUL_OPTIONS_FILE is
-        options: string public;
+        options: string public
 
         // Optional analyser compiler override, emitted by the
         // GenerateGhulOptionsJson target once ghul.runtime carries it.
         // Absent on every project today; the hand-parsed property read in
         // resolve_analyser_compiler_dll covers the meantime.
-        analyser_compiler: string? public;
+        analyser_compiler: string? public
 
         // JsonSerializer.deserialize bypasses this and assigns the field by
         // reflection.
@@ -55,72 +55,72 @@ namespace Analyser is
     // moved before answering each query - so results always reflect what is
     // on disk, not what was there at startup.
     class ANALYSER_SESSION: Disposable is
-        _project_directory: string;
-        _options: JsonSerializerOptions;
-        _process: Process?;
-        _temp_directory: string?;
-        _compiler_version: string?;
+        _project_directory: string
+        _options: JsonSerializerOptions
+        _process: Process?
+        _temp_directory: string?
+        _compiler_version: string?
 
         // The DLL this project opts into for analysis via the
         // GhulAnalyserCompiler property, resolved once per spawn. Null when
         // unset: the spawn then uses the project's pinned ghul.compiler tool
         // as before.
-        _analyser_compiler_dll: string?;
+        _analyser_compiler_dll: string?
 
         // Identity of everything that picked the answering compiler, so a
         // warm session can be recycled when it changes underneath us.
-        _compiler_fingerprint: string?;
+        _compiler_fingerprint: string?
 
         // Throttles the drift check above to at most one run per interval
         // on a warm session: every query path funnels through
         // ensure_spawned, and a hover burst must not pay a manifest walk
         // per request.
-        _next_fingerprint_check: System.DateTime;
+        _next_fingerprint_check: System.DateTime
 
-        _mtimes: MAP[string, System.DateTime];
-        _stderr_capture: StringBuilder;
-        _last_hints_for: LIST[string];
+        _mtimes: MAP[string, System.DateTime]
+        _stderr_capture: StringBuilder
+        _last_hints_for: LIST[string]
 
         // Bumped on every request; used to trigger periodic heap-check
         // pings that let the analyser's watchdog recycle the process
         // before it grows too large.
-        _query_count: long;
+        _query_count: long
 
         // Monotonic use-order counter, updated by the pool on every
         // get_session so it can evict the least-recently-used entry when
         // it reaches its size cap.
-        last_used_order: long public;
+        last_used_order: long public
 
         // How often (in requests) to send an unsolicited heap_check ping.
         // The compiler's own watchdog also samples the heap after every
         // Nth compile as a fallback, so this doesn't have to be tight -
         // it's belt-and-braces so a long-lived session that mostly serves
         // hovers doesn't grow unbounded between the fallback samples.
-        HEAP_CHECK_EVERY: int static => 20;
+        HEAP_CHECK_EVERY: int static => 20
 
-        FINGERPRINT_CHECK_INTERVAL_SECONDS: double static => 1.0D;
+        FINGERPRINT_CHECK_INTERVAL_SECONDS: double static => 1.0D
 
         init(project_directory: string) is
-            _project_directory = Path.get_full_path(project_directory);
-            _options = JsonSerializerOptions();
+            _project_directory = Path.get_full_path(project_directory)
+            _options = JsonSerializerOptions()
 
             // Union constructor args surface as public CLR fields, which
             // System.Text.Json skips by default.
-            _options.include_fields = true;
+            _options.include_fields = true
 
-            _temp_directory = null;
-            _mtimes = MAP[string, System.DateTime]();
-            _stderr_capture = StringBuilder();
-            _last_hints_for = LIST[string]();
-            _query_count = 0L;
-            last_used_order = 0L;
+            _temp_directory = null
+            _mtimes = MAP[string, System.DateTime]()
+            _stderr_capture = StringBuilder()
+            _last_hints_for = LIST[string]()
+            _query_count = 0L
+            last_used_order = 0L
             _next_fingerprint_check = System.DateTime.min_value;
         si
 
         // OS process id of the running analyser, or null if it hasn't
         // been spawned (or has exited). Handy for the sessions tool.
         process_id: int? is
-            let p = _process;
+            let p = _process
 
             if !p? \/ p.has_exited then
                 return null;
@@ -131,12 +131,12 @@ namespace Analyser is
 
         // The number of source files known to this session (empty on a
         // fresh session, populated after the first sync_sources).
-        known_source_count: int => _mtimes.count;
+        known_source_count: int => _mtimes.count
 
         // The analyser's current working set in bytes, or null when no
         // analyser process is running.
         working_set: long? is
-            let p = _process;
+            let p = _process
 
             if !p? \/ p.has_exited then
                 return null;
@@ -147,7 +147,7 @@ namespace Analyser is
 
         // Compiler version the analyser advertised on its LISTEN frame,
         // or null before the first spawn.
-        compiler_version: string? => _compiler_version;
+        compiler_version: string? => _compiler_version
 
         open_paths_equal(a: LIST[string], b: LIST[string]) -> bool static is
             if a.count != b.count then
@@ -163,9 +163,9 @@ namespace Analyser is
             return true;
         si
 
-        project_directory: string => _project_directory;
+        project_directory: string => _project_directory
 
-        is_running: bool => _process? /\ !_process.has_exited;
+        is_running: bool => _process? /\ !_process.has_exited
 
         // Relative paths of every ghūl source the .ghulproj glob (or globs)
         // would include. Falls back to a whole-tree walk if the .ghulproj
@@ -176,16 +176,16 @@ namespace Analyser is
         // declarations are all conditional. One pattern per line, as written
         // rather than as expanded.
         published_source_globs() -> LIST[string]? is
-            let path = Path.combine(temp_directory(), "source-globs.txt");
+            let path = Path.combine(temp_directory(), "source-globs.txt")
 
             if !File.exists(path) then
                 return null;
             fi
 
-            let globs = LIST[string]();
+            let globs = LIST[string]()
 
             for line in File.read_all_lines(path) do
-                let trimmed = line.trim();
+                let trimmed = line.trim()
 
                 if trimmed.length > 0 then
                     globs.add(trimmed);
@@ -203,18 +203,18 @@ namespace Analyser is
             // The build's answer first: it sees a shared Directory.Build.props
             // and knows which patterns it actually compiles, where the project
             // file parse below sees neither.
-            let globs = published_source_globs() ?? load_ghulproj_source_globs();
+            let globs = published_source_globs() ?? load_ghulproj_source_globs()
 
-            let seen = Collections.SET[string]();
-            let result = LIST[string]();
+            let seen = Collections.SET[string]()
+            let result = LIST[string]()
 
             if globs? /\ globs.count > 0 then
                 for glob in globs do
                     for absolute in expand_glob(glob) do
-                        let relative = Path.get_relative_path(_project_directory, absolute);
+                        let relative = Path.get_relative_path(_project_directory, absolute)
 
                         if !seen.contains(relative) then
-                            seen.add(relative);
+                            seen.add(relative)
                             result.add(relative);
                         fi
                     od
@@ -225,15 +225,15 @@ namespace Analyser is
 
             // Fallback for a project directory without a readable .ghulproj:
             // walk the tree recursively, skipping obvious build outputs.
-            let absolute = LIST[string]();
+            let absolute = LIST[string]()
 
-            add_sources(_project_directory, absolute);
+            add_sources(_project_directory, absolute)
 
             for path in absolute do
-                let relative = Path.get_relative_path(_project_directory, path);
+                let relative = Path.get_relative_path(_project_directory, path)
 
                 if !seen.contains(relative) then
-                    seen.add(relative);
+                    seen.add(relative)
                     result.add(relative);
                 fi
             od
@@ -247,27 +247,27 @@ namespace Analyser is
         // fallback walk" so a workspace with genuinely no sources doesn't
         // accidentally trigger a directory sweep.
         load_ghulproj_source_globs() -> LIST[string]? is
-            let projects = Directory.get_files(_project_directory, "*.ghulproj");
+            let projects = Directory.get_files(_project_directory, "*.ghulproj")
 
             if projects.count != 1 then
                 return null;
             fi
 
             try
-                let document = System.Xml.Linq.XDocument.load(projects[0]);
-                let root = document.root;
+                let document = System.Xml.Linq.XDocument.load(projects[0])
+                let root = document.root
 
                 if !root? then
                     return null;
                 fi
 
-                let result = LIST[string]();
+                let result = LIST[string]()
 
                 for element in root.descendants(System.Xml.Linq.XName.get("GhulSources")) do
-                    let include_attr = element.attribute(System.Xml.Linq.XName.get("Include"));
+                    let include_attr = element.attribute(System.Xml.Linq.XName.get("Include"))
 
                     if include_attr? then
-                        let value = include_attr.value;
+                        let value = include_attr.value
 
                         if value.length > 0 then
                             result.add(value);
@@ -293,16 +293,16 @@ namespace Analyser is
         // pinned to a ghul.runtime older than 14.1.0 (no
         // GenerateGhulOptionsJson target to run).
         resolve_compiler_options() -> LIST[string] is
-            let options_json_path = Path.combine(_project_directory, ".ghul-options.json");
+            let options_json_path = Path.combine(_project_directory, ".ghul-options.json")
 
-            generate_ghul_options_json();
+            generate_ghul_options_json()
 
             if File.exists(options_json_path) then
                 try
-                    let options_file = JsonSerializer.deserialize[GHUL_OPTIONS_FILE](File.read_all_text(options_json_path), _options);
+                    let options_file = JsonSerializer.deserialize[GHUL_OPTIONS_FILE](File.read_all_text(options_json_path), _options)
 
                     assert options_file? /\ options_file.options? else
-                        Exception("could not read the options field from {options_json_path}");
+                        Exception("could not read the options field from {options_json_path}")
 
                     return _tokenize_quoted(options_file.options);
                 catch ex: Exception
@@ -330,7 +330,7 @@ namespace Analyser is
         // $(MSBuildThisFileDirectory) and $(MSBuildProjectDirectory), the
         // two tokens a plain path-valued property needs.
         resolve_analyser_compiler_dll() -> string? is
-            let options_json_path = Path.combine(_project_directory, ".ghul-options.json");
+            let options_json_path = Path.combine(_project_directory, ".ghul-options.json")
 
             if File.exists(options_json_path) then
                 try
@@ -345,7 +345,7 @@ namespace Analyser is
                 yrt
             fi
 
-            let projects = Directory.get_files(_project_directory, "*.ghulproj");
+            let projects = Directory.get_files(_project_directory, "*.ghulproj")
 
             if projects.count == 1 then
                 if let value = _read_analyser_compiler_property(projects[0], _project_directory) then
@@ -359,16 +359,16 @@ namespace Analyser is
                 return value;
             fi
 
-            let dir mut = _project_directory;
+            let dir mut = _project_directory
 
             while true do
-                let parent = Path.get_full_path(Path.combine(dir, ".."));
+                let parent = Path.get_full_path(Path.combine(dir, ".."))
 
                 if parent =~ dir then
                     return null;
                 fi
 
-                dir = parent;
+                dir = parent
 
                 if let value = _read_analyser_compiler_property(Path.combine(dir, "Directory.Build.props"), dir) then
                     return value;
@@ -387,8 +387,8 @@ namespace Analyser is
             fi
 
             try
-                let document = System.Xml.Linq.XDocument.load(path);
-                let root = document.root;
+                let document = System.Xml.Linq.XDocument.load(path)
+                let root = document.root
 
                 if !root? then
                     return null;
@@ -398,10 +398,10 @@ namespace Analyser is
                 // assignment overwrites an earlier one, so the LAST
                 // unconditioned element in document order is the value the
                 // build would honour - not the first.
-                let found: string? mut = null;
+                let found: string? mut = null
 
                 for element in root.descendants(System.Xml.Linq.XName.get("GhulAnalyserCompiler")) do
-                    let condition_attr = element.attribute(System.Xml.Linq.XName.get("Condition"));
+                    let condition_attr = element.attribute(System.Xml.Linq.XName.get("Condition"))
 
                     if !condition_attr? then
                         // Substitute against a slash-terminated base so a
@@ -412,16 +412,16 @@ namespace Analyser is
                                 base_directory
                             else
                                 "{base_directory}/"
-                            fi;
+                            fi
 
                         let project_slashed =
                             if _project_directory.ends_with("/") then
                                 _project_directory
                             else
                                 "{_project_directory}/"
-                            fi;
+                            fi
 
-                        let value = element.value.replace("$(MSBuildThisFileDirectory)", base_slashed).replace("$(MSBuildProjectDirectory)", project_slashed);
+                        let value = element.value.replace("$(MSBuildThisFileDirectory)", base_slashed).replace("$(MSBuildProjectDirectory)", project_slashed)
 
                         if value.trim().length > 0 then
                             found = value;
@@ -455,7 +455,7 @@ namespace Analyser is
                         return "dll-missing {path}";
                     fi
 
-                    let stamp = File.get_last_write_time_utc(path);
+                    let stamp = File.get_last_write_time_utc(path)
 
                     return "dll {path} {stamp.ticks}";
                 catch ex: Exception
@@ -463,10 +463,10 @@ namespace Analyser is
                 yrt
             fi
 
-            let dir mut = _project_directory;
+            let dir mut = _project_directory
 
             while true do
-                let candidate = Path.combine(dir, ".config/dotnet-tools.json");
+                let candidate = Path.combine(dir, ".config/dotnet-tools.json")
 
                 if File.exists(candidate) then
                     try
@@ -476,7 +476,7 @@ namespace Analyser is
                     yrt
                 fi
 
-                let parent = Path.get_full_path(Path.combine(dir, ".."));
+                let parent = Path.get_full_path(Path.combine(dir, ".."))
 
                 if parent =~ dir then
                     return "none";
@@ -496,24 +496,24 @@ namespace Analyser is
         // report - resolve_compiler_options falls back to the hand-rolled
         // parse when the file never appears.
         generate_ghul_options_json() is
-            let start_info = ProcessStartInfo();
+            let start_info = ProcessStartInfo()
 
-            start_info.file_name = "dotnet";
-            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulOptionsJson";
-            start_info.working_directory = _project_directory;
+            start_info.file_name = "dotnet"
+            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulOptionsJson"
+            start_info.working_directory = _project_directory
 
-            start_info.use_shell_execute = false;
-            start_info.redirect_standard_output = true;
-            start_info.redirect_standard_error = true;
+            start_info.use_shell_execute = false
+            start_info.redirect_standard_output = true
+            start_info.redirect_standard_error = true
 
-            let process = Process.start(start_info);
+            let process = Process.start(start_info)
 
             if !process? then
                 return;
             fi
 
-            process.standard_output.read_to_end();
-            process.standard_error.read_to_end();
+            process.standard_output.read_to_end()
+            process.standard_error.read_to_end()
 
             process.wait_for_exit(120000);
         si
@@ -525,23 +525,23 @@ namespace Analyser is
         // emits balanced double quotes around any value that could contain
         // whitespace, so no backslash-escaping support is needed here.
         _tokenize_quoted(text: string) -> LIST[string] is
-            let result = LIST[string]();
-            let current = StringBuilder();
-            let in_quotes mut = false;
-            let has_token mut = false;
+            let result = LIST[string]()
+            let current = StringBuilder()
+            let in_quotes mut = false
+            let has_token mut = false
 
             for c in text do
                 if c == '"' then
-                    in_quotes = !in_quotes;
+                    in_quotes = !in_quotes
                     has_token = true;
                 elif !in_quotes /\ (c == ' ' \/ c == '\t' \/ c == '\n' \/ c == '\r') then
                     if has_token then
-                        result.add(current.to_string());
-                        current.clear();
+                        result.add(current.to_string())
+                        current.clear()
                         has_token = false;
                     fi
                 else
-                    current.append(c);
+                    current.append(c)
                     has_token = true;
                 fi
             od
@@ -563,24 +563,24 @@ namespace Analyser is
         // project referencing a ghul.runtime older than 14.1.0 - see
         // resolve_compiler_options.
         load_ghulproj_compiler_options() -> LIST[string] is
-            let result = LIST[string]();
+            let result = LIST[string]()
 
-            let projects = Directory.get_files(_project_directory, "*.ghulproj");
+            let projects = Directory.get_files(_project_directory, "*.ghulproj")
 
             if projects.count != 1 then
                 return result;
             fi
 
             try
-                let document = System.Xml.Linq.XDocument.load(projects[0]);
-                let root = document.root;
+                let document = System.Xml.Linq.XDocument.load(projects[0])
+                let root = document.root
 
                 if !root? then
                     return result;
                 fi
 
                 for element in root.descendants(System.Xml.Linq.XName.get("GhulCompiler")) do
-                    let seen_program mut = false;
+                    let seen_program mut = false
 
                     for token in _tokenize(element.value) do
                         if seen_program then
@@ -592,10 +592,10 @@ namespace Analyser is
                 od
 
                 for element in root.descendants(System.Xml.Linq.XName.get("GhulOptions")) do
-                    let condition_attr = element.attribute(System.Xml.Linq.XName.get("Condition"));
+                    let condition_attr = element.attribute(System.Xml.Linq.XName.get("Condition"))
 
                     if !condition_attr? then
-                        let include_attr = element.attribute(System.Xml.Linq.XName.get("Include"));
+                        let include_attr = element.attribute(System.Xml.Linq.XName.get("Include"))
 
                         if include_attr? then
                             for token in _tokenize(include_attr.value) do
@@ -613,14 +613,14 @@ namespace Analyser is
 
         // Split a command fragment on runs of whitespace, dropping empties.
         _tokenize(text: string) -> LIST[string] is
-            let result = LIST[string]();
+            let result = LIST[string]()
 
-            let current = StringBuilder();
+            let current = StringBuilder()
 
             for c in text do
                 if c == ' ' \/ c == '\t' \/ c == '\n' \/ c == '\r' then
                     if current.length > 0 then
-                        result.add(current.to_string());
+                        result.add(current.to_string())
                         current.clear();
                     fi
                 else
@@ -641,22 +641,22 @@ namespace Analyser is
         // literal path; anything more exotic falls back to a top-level
         // enumeration of the pattern's directory.
         expand_glob(pattern: string) -> LIST[string] is
-            let normalized = pattern.replace('\\', '/');
-            let matches = LIST[string]();
+            let normalized = pattern.replace('\\', '/')
+            let matches = LIST[string]()
 
-            let recursive_marker = "/**/";
-            let recursive_at = normalized.index_of(recursive_marker);
+            let recursive_marker = "/**/"
+            let recursive_at = normalized.index_of(recursive_marker)
 
             if recursive_at >= 0 then
-                let base_relative = normalized.substring(0, recursive_at);
-                let file_pattern = normalized.substring(recursive_at + recursive_marker.length);
+                let base_relative = normalized.substring(0, recursive_at)
+                let file_pattern = normalized.substring(recursive_at + recursive_marker.length)
 
                 let base_directory =
                     if base_relative.length > 0 then
                         Path.combine(_project_directory, base_relative)
                     else
                         _project_directory
-                    fi;
+                    fi
 
                 if Directory.exists(base_directory) then
                     add_files_recursive(base_directory, file_pattern, matches);
@@ -666,22 +666,22 @@ namespace Analyser is
             fi
 
             if normalized.starts_with("**/") then
-                let file_pattern = normalized.substring(3);
+                let file_pattern = normalized.substring(3)
 
-                add_files_recursive(_project_directory, file_pattern, matches);
+                add_files_recursive(_project_directory, file_pattern, matches)
 
                 return matches;
             fi
 
-            let last_slash = normalized.last_index_of('/');
+            let last_slash = normalized.last_index_of('/')
 
             if last_slash >= 0 then
-                let base_relative = normalized.substring(0, last_slash);
-                let file_pattern = normalized.substring(last_slash + 1);
-                let base_directory = Path.combine(_project_directory, base_relative);
+                let base_relative = normalized.substring(0, last_slash)
+                let file_pattern = normalized.substring(last_slash + 1)
+                let base_directory = Path.combine(_project_directory, base_relative)
 
                 if !file_pattern.contains("*") /\ !file_pattern.contains("?") then
-                    let literal = Path.combine(base_directory, file_pattern);
+                    let literal = Path.combine(base_directory, file_pattern)
 
                     if File.exists(literal) then
                         matches.add(literal);
@@ -699,7 +699,7 @@ namespace Analyser is
                 return matches;
             fi
 
-            let bare = Path.combine(_project_directory, normalized);
+            let bare = Path.combine(_project_directory, normalized)
 
             if !normalized.contains("*") /\ !normalized.contains("?") then
                 if File.exists(bare) then
@@ -717,7 +717,7 @@ namespace Analyser is
         si
 
         add_files_recursive(directory: string, file_pattern: string, result: LIST[string]) is
-            let name = Path.get_file_name(directory);
+            let name = Path.get_file_name(directory)
 
             if name =~ "bin" \/ name =~ "obj" \/ name =~ "publish" \/ name =~ ".git" then
                 return;
@@ -733,7 +733,7 @@ namespace Analyser is
         si
 
         add_sources(directory: string, result: LIST[string]) is
-            let name = Path.get_file_name(directory);
+            let name = Path.get_file_name(directory)
 
             if name =~ "bin" \/ name =~ "obj" \/ name =~ "publish" \/ name =~ ".git" then
                 return;
@@ -762,11 +762,11 @@ namespace Analyser is
                 return directory;
             fi
 
-            let directory = Path.combine(Path.get_temp_path(), "ghul-mcp-{System.Guid.new_guid()}");
+            let directory = Path.combine(Path.get_temp_path(), "ghul-mcp-{System.Guid.new_guid()}")
 
-            Directory.create_directory(directory);
+            Directory.create_directory(directory)
 
-            _temp_directory = directory;
+            _temp_directory = directory
 
             return directory;
         si
@@ -786,27 +786,27 @@ namespace Analyser is
         // it to a missing or unrestored project - so it is reported here,
         // where what actually happened is still in hand.
         generate_response_file(path: string, source_globs_path: string) is
-            let start_info = ProcessStartInfo();
+            let start_info = ProcessStartInfo()
 
-            start_info.file_name = "dotnet";
-            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulResponseFile -p:GhulResponseFile=\"{path}\" -p:GhulSourceGlobsFile=\"{source_globs_path}\"";
-            start_info.working_directory = _project_directory;
+            start_info.file_name = "dotnet"
+            start_info.arguments = "build -verbosity:quiet -t:GenerateGhulResponseFile -p:GhulResponseFile=\"{path}\" -p:GhulSourceGlobsFile=\"{source_globs_path}\""
+            start_info.working_directory = _project_directory
 
-            start_info.use_shell_execute = false;
-            start_info.redirect_standard_output = true;
-            start_info.redirect_standard_error = true;
+            start_info.use_shell_execute = false
+            start_info.redirect_standard_output = true
+            start_info.redirect_standard_error = true
 
-            let process = Process.start(start_info);
+            let process = Process.start(start_info)
 
             if !process? then
                 return;
             fi
 
-            let out = process.standard_output.read_to_end();
-            let err = process.standard_error.read_to_end();
+            let out = process.standard_output.read_to_end()
+            let err = process.standard_error.read_to_end()
 
             if !process.wait_for_exit(120000) then
-                Std.error.write_line("ghul-mcp: timed out resolving {_project_directory} into a response file");
+                Std.error.write_line("ghul-mcp: timed out resolving {_project_directory} into a response file")
                 return;
             fi
 
@@ -818,9 +818,9 @@ namespace Analyser is
                 "ghul-mcp: could not resolve {_project_directory} into a response file "
                 "(dotnet build -t:GenerateGhulResponseFile exited {process.exit_code}); "
                 "falling back to .assemblies.json"
-            );
+            )
 
-            Std.error.write_line(out);
+            Std.error.write_line(out)
             Std.error.write_line(err);
         si
 
@@ -834,7 +834,7 @@ namespace Analyser is
         // reads each -a eagerly and stops at the first one that is not there.
         read_response_file(path: string, arguments: LIST[string]) is
             for line in File.read_all_lines(path) do
-                let trimmed = line.trim();
+                let trimmed = line.trim()
 
                 if trimmed.length == 0 then
                     continue;
@@ -855,7 +855,7 @@ namespace Analyser is
                 Std.error.write_line(
                     "ghul-mcp: referenced assembly {tokens[1]} is not present yet, "
                     "analysis will be incomplete until it is built"
-                );
+                )
 
                 return;
             fi
@@ -868,7 +868,7 @@ namespace Analyser is
         // The reference paths and options as the two JSON targets published
         // them, for a project pinned to a ghul.runtime older than 14.3.0.
         read_json_configuration(arguments: LIST[string]) is
-            let assemblies_json_path = Path.combine(_project_directory, ".assemblies.json");
+            let assemblies_json_path = Path.combine(_project_directory, ".assemblies.json")
 
             // Unconditionally, not just when the file is absent: it is a
             // build artifact of whatever the project's references resolved
@@ -880,7 +880,7 @@ namespace Analyser is
             // operators fail to resolve, the failure is swallowed per file,
             // and every declaration past the first failure in a file
             // reports its types as unresolved.
-            let regenerated = generate_assemblies_json();
+            let regenerated = generate_assemblies_json()
 
             if !File.exists(assemblies_json_path) then
                 throw Exception("could not produce .assemblies.json in {_project_directory} - is this a ghūl project with its dotnet tools restored?");
@@ -896,7 +896,7 @@ namespace Analyser is
                 Std.error.write_line("ghul-mcp: continuing with the existing .assemblies.json in {_project_directory}");
             fi
 
-            let assemblies_file = JsonSerializer.deserialize[ASSEMBLIES_FILE](File.read_all_text(assemblies_json_path), _options);
+            let assemblies_file = JsonSerializer.deserialize[ASSEMBLIES_FILE](File.read_all_text(assemblies_json_path), _options)
 
             // JsonSerializer.deserialize bypasses ASSEMBLIES_FILE's init(),
             // assigning fields by reflection - so a missing or null
@@ -904,13 +904,13 @@ namespace Analyser is
             // LIST[string] null at runtime despite its static type. The
             // presence test is deliberate, not redundant, hence the assert.
             assert assemblies_file? /\ assemblies_file.assemblies? else
-                Exception("could not read an assemblies list from {assemblies_json_path}");
+                Exception("could not read an assemblies list from {assemblies_json_path}")
 
             for assembly in assemblies_file.assemblies do
-                let assembly_tokens = LIST[string]();
+                let assembly_tokens = LIST[string]()
 
-                assembly_tokens.add("-a");
-                assembly_tokens.add(assembly);
+                assembly_tokens.add("-a")
+                assembly_tokens.add(assembly)
 
                 add_arguments(assembly_tokens, arguments);
             od
@@ -926,12 +926,12 @@ namespace Analyser is
         si
 
         start() is
-            let arguments = LIST[string]();
+            let arguments = LIST[string]()
 
-            let project_response_file = Path.combine(temp_directory(), "project.rsp");
-            let source_globs_path = Path.combine(temp_directory(), "source-globs.txt");
+            let project_response_file = Path.combine(temp_directory(), "project.rsp")
+            let source_globs_path = Path.combine(temp_directory(), "source-globs.txt")
 
-            generate_response_file(project_response_file, source_globs_path);
+            generate_response_file(project_response_file, source_globs_path)
 
             if File.exists(project_response_file) then
                 read_response_file(project_response_file, arguments);
@@ -939,22 +939,22 @@ namespace Analyser is
                 read_json_configuration(arguments);
             fi
 
-            arguments.add("-A");
+            arguments.add("-A")
 
-            let response_file = Path.combine(temp_directory(), "analysis.rsp");
-            let line = StringBuilder();
+            let response_file = Path.combine(temp_directory(), "analysis.rsp")
+            let line = StringBuilder()
 
             for argument in arguments do
                 line.append("\"{argument}\" ");
             od
 
-            File.write_all_text(response_file, line.to_string());
+            File.write_all_text(response_file, line.to_string())
 
-            let start_info = ProcessStartInfo();
+            let start_info = ProcessStartInfo()
 
-            _analyser_compiler_dll = resolve_analyser_compiler_dll();
+            _analyser_compiler_dll = resolve_analyser_compiler_dll()
 
-            let program mut = "ghul-compiler";
+            let program mut = "ghul-compiler"
 
             if let dll: string = _analyser_compiler_dll then
                 if File.exists(dll) then
@@ -968,28 +968,28 @@ namespace Analyser is
                 fi
             fi
 
-            start_info.file_name = "dotnet";
-            start_info.arguments = "{program} @\"{response_file}\"";
-            start_info.working_directory = _project_directory;
+            start_info.file_name = "dotnet"
+            start_info.arguments = "{program} @\"{response_file}\""
+            start_info.working_directory = _project_directory
 
-            start_info.use_shell_execute = false;
-            start_info.redirect_standard_input = true;
-            start_info.redirect_standard_output = true;
-            start_info.redirect_standard_error = true;
+            start_info.use_shell_execute = false
+            start_info.redirect_standard_input = true
+            start_info.redirect_standard_output = true
+            start_info.redirect_standard_error = true
 
-            start_info.standard_input_encoding = UTF8Encoding();
-            start_info.standard_output_encoding = UTF8Encoding();
-            start_info.standard_error_encoding = UTF8Encoding();
+            start_info.standard_input_encoding = UTF8Encoding()
+            start_info.standard_output_encoding = UTF8Encoding()
+            start_info.standard_error_encoding = UTF8Encoding()
 
-            let started = Process.start(start_info);
+            let started = Process.start(start_info)
 
             if !started? then
                 throw Exception("failed to start dotnet ghul-compiler in {_project_directory}");
             fi
 
-            _process = started;
+            _process = started
 
-            _compiler_fingerprint = compute_compiler_fingerprint();
+            _compiler_fingerprint = compute_compiler_fingerprint()
 
             // Drain stderr in the background so a chatty analyser doesn't
             // fill its stderr pipe and block.
@@ -997,24 +997,24 @@ namespace Analyser is
                 () is
                     try
                         do
-                            let stderr_line = started.standard_error.read_line();
+                            let stderr_line = started.standard_error.read_line()
 
                             if !stderr_line? then
                                 break;
                             fi
 
-                            _stderr_capture.append(stderr_line);
+                            _stderr_capture.append(stderr_line)
                             _stderr_capture.append('\n');
                         od
                     catch ex: Exception
                     yrt
                 si
-            );
+            )
 
-            let first = read_response();
+            let first = read_response()
 
             if let listen: Response.LISTEN = first then
-                _reject_if_compiler_too_old(listen.compiler_version);
+                _reject_if_compiler_too_old(listen.compiler_version)
 
                 _compiler_version = listen.compiler_version;
             else
@@ -1038,7 +1038,7 @@ namespace Analyser is
         // INLAY_HINTS query the `inlays` tool depends on, ghul#1642; any
         // analyser predating compiler_version on the LISTEN frame, ghul#1634
         // / 19.13.0, is "too old to negotiate" and refused.)
-        MIN_COMPILER_VERSION: string static => "30.2.3";
+        MIN_COMPILER_VERSION: string static => "30.2.3"
 
         _reject_if_compiler_too_old(reported: string?) is
             if !reported? \/ reported.length == 0 then
@@ -1076,8 +1076,8 @@ namespace Analyser is
         // positive if greater. Good enough for a min-version check where
         // we don't need to distinguish `19.13.0-alpha.1` from `19.13.0`.
         compare_versions(left: string, right: string) -> int static is
-            let left_parts = _extract_numeric_triple(left);
-            let right_parts = _extract_numeric_triple(right);
+            let left_parts = _extract_numeric_triple(left)
+            let right_parts = _extract_numeric_triple(right)
 
             for i in 0..3 do
                 if left_parts[i] != right_parts[i] then
@@ -1089,11 +1089,11 @@ namespace Analyser is
         si
 
         _extract_numeric_triple(version: string) -> LIST[int] static is
-            let result = LIST([0, 0, 0]);
+            let result = LIST([0, 0, 0])
 
-            let index mut = 0;
-            let current mut = 0;
-            let has_digits mut = false;
+            let index mut = 0
+            let current mut = 0
+            let has_digits mut = false
 
             for c in version do
                 if index >= 3 then
@@ -1101,13 +1101,13 @@ namespace Analyser is
                 fi
 
                 if c >= '0' /\ c <= '9' then
-                    current = current * 10 + (cast int(c) - cast int('0'));
+                    current = current * 10 + (cast int(c) - cast int('0'))
                     has_digits = true;
                 elif c == '.' then
                     if has_digits then
-                        result[index] = current;
-                        index = index + 1;
-                        current = 0;
+                        result[index] = current
+                        index = index + 1
+                        current = 0
                         has_digits = false;
                     fi
                 else
@@ -1128,27 +1128,27 @@ namespace Analyser is
         // leaves whatever stale file was already on disk, which is exactly
         // the state that produces confidently wrong analysis.
         generate_assemblies_json() -> bool is
-            let start_info = ProcessStartInfo();
+            let start_info = ProcessStartInfo()
 
-            start_info.file_name = "dotnet";
-            start_info.arguments = "build -verbosity:quiet -t:GenerateAssembliesJson";
-            start_info.working_directory = _project_directory;
+            start_info.file_name = "dotnet"
+            start_info.arguments = "build -verbosity:quiet -t:GenerateAssembliesJson"
+            start_info.working_directory = _project_directory
 
-            start_info.use_shell_execute = false;
-            start_info.redirect_standard_output = true;
-            start_info.redirect_standard_error = true;
+            start_info.use_shell_execute = false
+            start_info.redirect_standard_output = true
+            start_info.redirect_standard_error = true
 
-            let process = Process.start(start_info);
+            let process = Process.start(start_info)
 
             if !process? then
                 return false;
             fi
 
-            process.standard_output.read_to_end();
-            let errors = process.standard_error.read_to_end();
+            process.standard_output.read_to_end()
+            let errors = process.standard_error.read_to_end()
 
             if !process.wait_for_exit(120000) then
-                Std.error.write_line("ghul-mcp: timed out regenerating .assemblies.json in {_project_directory}");
+                Std.error.write_line("ghul-mcp: timed out regenerating .assemblies.json in {_project_directory}")
                 return false;
             fi
 
@@ -1157,7 +1157,7 @@ namespace Analyser is
                     "ghul-mcp: could not regenerate .assemblies.json in {_project_directory} "
                     "(dotnet build -t:GenerateAssembliesJson exited {process.exit_code}); "
                     "analysis will use whatever reference list is already on disk\n{errors}"
-                );
+                )
                 return false;
             fi
 
@@ -1175,10 +1175,10 @@ namespace Analyser is
             // release_session. Throttled to at most one drift check per
             // interval: every query path funnels through here, and a hover
             // burst must not pay a manifest walk per request.
-            let now = System.DateTime.utc_now;
+            let now = System.DateTime.utc_now
 
             if is_running /\ _compiler_fingerprint? /\ now > _next_fingerprint_check then
-                _next_fingerprint_check = now.add_seconds(FINGERPRINT_CHECK_INTERVAL_SECONDS);
+                _next_fingerprint_check = now.add_seconds(FINGERPRINT_CHECK_INTERVAL_SECONDS)
 
                 if _compiler_fingerprint !~ compute_compiler_fingerprint() then
                     dispose_process();
@@ -1186,7 +1186,7 @@ namespace Analyser is
             fi
 
             if !is_running then
-                dispose_process();
+                dispose_process()
                 start();
             fi
         si
@@ -1194,20 +1194,20 @@ namespace Analyser is
         // Send every new or on-disk-changed source and swallow the
         // diagnostics response the edit provokes.
         sync_sources() is
-            let changed = LIST[EDIT_FILE]();
+            let changed = LIST[EDIT_FILE]()
 
             for path in find_sources() do
-                let absolute = Path.combine(_project_directory, path);
-                let stamp = File.get_last_write_time_utc(absolute);
+                let absolute = Path.combine(_project_directory, path)
+                let stamp = File.get_last_write_time_utc(absolute)
 
                 if !_mtimes.contains_key(path) \/ _mtimes[path] !~ stamp then
-                    changed.add(EDIT_FILE(path, File.read_all_text(absolute)));
+                    changed.add(EDIT_FILE(path, File.read_all_text(absolute)))
                     _mtimes[path] = stamp;
                 fi
             od
 
             if changed.count > 0 then
-                write_request(Request.EDIT(changed));
+                write_request(Request.EDIT(changed))
                 read_response();
             fi
         si
@@ -1216,7 +1216,7 @@ namespace Analyser is
         // query path that doesn't need to interleave SET_OPEN_FILES between
         // the two.
         ensure_fresh() is
-            ensure_spawned();
+            ensure_spawned()
             sync_sources();
         si
 
@@ -1227,12 +1227,12 @@ namespace Analyser is
         // across queries - `compile_diagnostics(no args)` reliably
         // suppresses hints even if a previous call opted in.
         compile_diagnostics() -> Response.DIAGNOSTICS =>
-            compile_diagnostics(Collections.LIST[string]());
+            compile_diagnostics(Collections.LIST[string]())
 
         compile_diagnostics(hints_for: Collections.Iterable[string]) -> Response.DIAGNOSTICS is
-            ensure_spawned();
+            ensure_spawned()
 
-            let open_paths = LIST[string]();
+            let open_paths = LIST[string]()
 
             for p in hints_for do
                 if p.length > 0 then
@@ -1244,7 +1244,7 @@ namespace Analyser is
             // gating is in effect for the whole compilation. The wire doc
             // says as much: "sent before the diagnostics-producing
             // requests".
-            write_request(Request.SET_OPEN_FILES(open_paths));
+            write_request(Request.SET_OPEN_FILES(open_paths))
 
             // If the open-files set differs from the previous compile,
             // bust the mtime cache so sync_sources re-EDITs everything.
@@ -1255,16 +1255,16 @@ namespace Analyser is
             // Forcing an EDIT invalidates the flag; the compile that
             // follows runs compile-expressions again.
             if !open_paths_equal(open_paths, _last_hints_for) then
-                _mtimes.clear();
+                _mtimes.clear()
                 _last_hints_for = open_paths;
             fi
 
-            sync_sources();
+            sync_sources()
 
-            let response = exchange(Request.COMPILE());
+            let response = exchange(Request.COMPILE())
 
             if let diagnostics: Response.DIAGNOSTICS = response then
-                maybe_heap_check();
+                maybe_heap_check()
                 return diagnostics;
             fi
 
@@ -1283,18 +1283,18 @@ namespace Analyser is
         // as COMPILE) - callers that only want this file's rows should
         // filter on Response.DIAGNOSTICS.diagnostics by path.
         edit_diagnostics(path: string) -> Response.DIAGNOSTICS is
-            ensure_spawned();
-            sync_sources();
+            ensure_spawned()
+            sync_sources()
 
-            let absolute = Path.combine(_project_directory, path);
-            let contents = File.read_all_text(absolute);
+            let absolute = Path.combine(_project_directory, path)
+            let contents = File.read_all_text(absolute)
 
-            let response = exchange(Request.EDIT(LIST([EDIT_FILE(path, contents)])));
+            let response = exchange(Request.EDIT(LIST([EDIT_FILE(path, contents)])))
 
-            _mtimes[path] = File.get_last_write_time_utc(absolute);
+            _mtimes[path] = File.get_last_write_time_utc(absolute)
 
             if let diagnostics: Response.DIAGNOSTICS = response then
-                maybe_heap_check();
+                maybe_heap_check()
                 return diagnostics;
             fi
 
@@ -1306,9 +1306,9 @@ namespace Analyser is
         // compile with `path` open (reusing the diagnostics path's open-set
         // handling and cache-busting) before the retrieval query.
         inlay_hints(path: string) -> Response.INLAY_HINTS is
-            compile_diagnostics(Collections.LIST([path]));
+            compile_diagnostics(Collections.LIST([path]))
 
-            let response = query(Request.INLAY_HINTS(path));
+            let response = query(Request.INLAY_HINTS(path))
 
             if let inlays: Response.INLAY_HINTS = response then
                 return inlays;
@@ -1327,7 +1327,7 @@ namespace Analyser is
                 return false;
             fi
 
-            let response = exchange(Request.HEAP_CHECK());
+            let response = exchange(Request.HEAP_CHECK())
 
             return is_running;
         si
@@ -1351,17 +1351,17 @@ namespace Analyser is
         // once. Anything more than one retry is unusual and surfaces as
         // an exception the caller can convert to a tool result.
         exchange(request: Request) -> Response is
-            _query_count = _query_count + 1L;
+            _query_count = _query_count + 1L
 
-            write_request(request);
-            let response mut = read_response();
+            write_request(request)
+            let response mut = read_response()
 
             if isa Response.RESTART(response) then
-                dispose_process();
-                ensure_spawned();
+                dispose_process()
+                ensure_spawned()
 
-                write_request(request);
-                response = read_response();
+                write_request(request)
+                response = read_response()
 
                 if isa Response.RESTART(response) then
                     throw Exception("analyser requested restart twice in a row against {_project_directory}");
@@ -1372,7 +1372,7 @@ namespace Analyser is
         si
 
         hover(path: string, line: int, column: int) -> Response.HOVER is
-            let response = query(Request.HOVER(path, line, column));
+            let response = query(Request.HOVER(path, line, column))
 
             if let hover_response: Response.HOVER = response then
                 return hover_response;
@@ -1382,7 +1382,7 @@ namespace Analyser is
         si
 
         definition(path: string, line: int, column: int) -> Response.DEFINITION is
-            let response = query(Request.DEFINITION(path, line, column));
+            let response = query(Request.DEFINITION(path, line, column))
 
             if let definition_response: Response.DEFINITION = response then
                 return definition_response;
@@ -1392,7 +1392,7 @@ namespace Analyser is
         si
 
         references(path: string, line: int, column: int) -> Response.REFERENCES is
-            let response = query(Request.REFERENCES(path, line, column));
+            let response = query(Request.REFERENCES(path, line, column))
 
             if let references_response: Response.REFERENCES = response then
                 return references_response;
@@ -1402,7 +1402,7 @@ namespace Analyser is
         si
 
         implementation(path: string, line: int, column: int) -> Response.IMPLEMENTATION is
-            let response = query(Request.IMPLEMENTATION(path, line, column));
+            let response = query(Request.IMPLEMENTATION(path, line, column))
 
             if let implementation_response: Response.IMPLEMENTATION = response then
                 return implementation_response;
@@ -1413,7 +1413,7 @@ namespace Analyser is
 
         // Workspace-wide when path is empty.
         symbols(path: string) -> Response.SYMBOLS is
-            let response = query(Request.SYMBOLS(path));
+            let response = query(Request.SYMBOLS(path))
 
             if let symbols_response: Response.SYMBOLS = response then
                 return symbols_response;
@@ -1426,7 +1426,7 @@ namespace Analyser is
         // ancestors and members. Compiler 19.11.0+ answers this natively;
         // the old scratch-file + completion trick is gone.
         describe_type(type_expression: string) -> Response.DESCRIBE_TYPE is
-            let response = query(Request.DESCRIBE_TYPE(type_expression));
+            let response = query(Request.DESCRIBE_TYPE(type_expression))
 
             if let describe_type_response: Response.DESCRIBE_TYPE = response then
                 return describe_type_response;
@@ -1436,7 +1436,7 @@ namespace Analyser is
         si
 
         unexpected(wanted: string, response: Response) -> Exception =>
-            Exception("expected a {wanted} response but got {response.get_type().name}.\nstderr so far:\n{_stderr_capture}");
+            Exception("expected a {wanted} response but got {response.get_type().name}.\nstderr so far:\n{_stderr_capture}")
 
         // Freshen, send, and read past any unsolicited diagnostics frame - a
         // query that misses its cache falls through to a full compile, which
@@ -1444,21 +1444,21 @@ namespace Analyser is
         // response means the analyser's watchdog wants to recycle the
         // process: honour it and retry once against a fresh process.
         query(request: Request) -> Response is
-            ensure_fresh();
-            write_request(request);
+            ensure_fresh()
+            write_request(request)
 
-            let response mut = read_response();
+            let response mut = read_response()
 
             if isa Response.DIAGNOSTICS(response) then
                 response = read_response();
             fi
 
             if isa Response.RESTART(response) then
-                dispose_process();
-                ensure_fresh();
-                write_request(request);
+                dispose_process()
+                ensure_fresh()
+                write_request(request)
 
-                response = read_response();
+                response = read_response()
 
                 if isa Response.DIAGNOSTICS(response) then
                     response = read_response();
@@ -1469,14 +1469,14 @@ namespace Analyser is
         si
 
         write_request(request: Request) is
-            let process = _process;
+            let process = _process
 
             if !process? then
                 throw Exception("analyser process is not running");
             fi
 
-            process.standard_input.write(JsonSerializer.serialize[Request](request, _options));
-            process.standard_input.write("\n");
+            process.standard_input.write(JsonSerializer.serialize[Request](request, _options))
+            process.standard_input.write("\n")
             process.standard_input.flush();
         si
 
@@ -1487,14 +1487,14 @@ namespace Analyser is
         // (older compilers pre-#1634 do this). Turning that into a clean
         // failure - dispose the process, surface the timeout - keeps the
         // pool healthy so subsequent calls don't inherit the wedged state.
-        READ_TIMEOUT_MS: int static => 60000;
+        READ_TIMEOUT_MS: int static => 60000
 
         // Read one line from the analyser's stdout and deserialize it into
         // a Response. Wrapped in a bounded wait so a wedged analyser
         // surfaces as a diagnosable timeout rather than a permanent hang.
         read_response() -> Response is
-            let response: Response? mut = null;
-            let error: Exception? mut = null;
+            let response: Response? mut = null
+            let error: Exception? mut = null
 
             let task = Tasks.TASK.run(
                 () is
@@ -1504,10 +1504,10 @@ namespace Analyser is
                         error = ex;
                     yrt
                 si
-            );
+            )
 
             if !task.wait(READ_TIMEOUT_MS) then
-                dispose_process();
+                dispose_process()
 
                 throw Exception(
                     "analyser at {_project_directory} did not respond within {READ_TIMEOUT_MS}ms. "
@@ -1534,16 +1534,16 @@ namespace Analyser is
         // One JSON object per line; read characters to the newline and
         // deserialize. Called under the wait budget in read_response.
         _read_response_unbounded() -> Response is
-            let process = _process;
+            let process = _process
 
             if !process? then
                 throw Exception("analyser process is not running");
             fi
 
-            let buffer = StringBuilder();
+            let buffer = StringBuilder()
 
             do
-                let c = process.standard_output.read();
+                let c = process.standard_output.read()
 
                 if c < 0 then
                     throw Exception("analyser stdout closed before a response line.\nbuffer so far:\n{buffer}\nstderr so far:\n{_stderr_capture}");
@@ -1558,7 +1558,7 @@ namespace Analyser is
                 fi
             od
 
-            let response = JsonSerializer.deserialize[Response](buffer.to_string(), _options);
+            let response = JsonSerializer.deserialize[Response](buffer.to_string(), _options)
 
             if !response? then
                 throw Exception("analyser returned null deserialising response: {buffer}");
@@ -1582,8 +1582,8 @@ namespace Analyser is
                 fi
             fi
 
-            _process = null;
-            _mtimes.clear();
+            _process = null
+            _mtimes.clear()
 
             // Takes the analyser's response file and the build's with it.
             if let directory: string = _temp_directory then

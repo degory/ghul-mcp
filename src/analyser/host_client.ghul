@@ -1,32 +1,32 @@
 namespace Analyser is
-    use System.Diagnostics.Process;
-    use System.Diagnostics.ProcessStartInfo;
+    use System.Diagnostics.Process
+    use System.Diagnostics.ProcessStartInfo
 
-    use System.Exception;
-    use System.Reflection.Assembly;
+    use System.Exception
+    use System.Reflection.Assembly
 
-    use System.Security.Cryptography.MD5;
+    use System.Security.Cryptography.MD5
 
-    use System.Text.Json.JsonElement;
-    use System.Text.Json.JsonSerializer;
-    use System.Text.StringBuilder;
-    use System.Text.UTF8Encoding;
+    use System.Text.Json.JsonElement
+    use System.Text.Json.JsonSerializer
+    use System.Text.StringBuilder
+    use System.Text.UTF8Encoding
 
-    use System.Net.Sockets.AddressFamily;
-    use System.Net.Sockets.NetworkStream;
-    use System.Net.Sockets.ProtocolType;
-    use System.Net.Sockets.Socket;
-    use System.Net.Sockets.SocketType;
-    use System.Net.Sockets.UnixDomainSocketEndPoint;
+    use System.Net.Sockets.AddressFamily
+    use System.Net.Sockets.NetworkStream
+    use System.Net.Sockets.ProtocolType
+    use System.Net.Sockets.Socket
+    use System.Net.Sockets.SocketType
+    use System.Net.Sockets.UnixDomainSocketEndPoint
 
-    use Collections.LIST;
+    use Collections.LIST
 
-    use IO.File;
-    use IO.Path;
-    use IO.StreamReader;
-    use IO.StreamWriter;
+    use IO.File
+    use IO.Path
+    use IO.StreamReader
+    use IO.StreamWriter
 
-    use MCP.WIRE;
+    use MCP.WIRE
 
     // The client half of the per-project pool host (see POOL_HOST): finds
     // the host for a project through the project-keyed socket path, spawns
@@ -38,23 +38,23 @@ namespace Analyser is
         // Must move together with POOL_HOST.PROTOCOL_VERSION: a mismatch is
         // the signal to recycle a host left over from an incompatible
         // ghul-mcp build.
-        PROTOCOL_VERSION: int static => 1;
+        PROTOCOL_VERSION: int static => 1
 
         // How long to wait for a freshly spawned host to bind its socket
         // before giving up. A cold dotnet start is comfortably inside this;
         // exceeding it means the host failed to start at all.
-        SPAWN_WAIT_MS: int static => 30000;
+        SPAWN_WAIT_MS: int static => 30000
 
-        CONNECT_POLL_MS: int static => 100;
+        CONNECT_POLL_MS: int static => 100
 
-        SOCKET_DIRECTORY: string static => "/tmp";
+        SOCKET_DIRECTORY: string static => "/tmp"
 
-        SOCKET_PATTERN: string static => "ghul-mcp-pool-*.sock";
+        SOCKET_PATTERN: string static => "ghul-mcp-pool-*.sock"
 
         // Every pool-host socket on the machine, living or stale - the
         // caller tells them apart by asking each host for its status.
         discover_sockets() -> LIST[string] static is
-            let result = LIST[string]();
+            let result = LIST[string]()
 
             for socket_path in IO.Directory.get_files(SOCKET_DIRECTORY, SOCKET_PATTERN) do
                 result.add(socket_path);
@@ -64,7 +64,7 @@ namespace Analyser is
         si
 
         socket_path_for(project: string) -> string static is
-            let builder = StringBuilder();
+            let builder = StringBuilder()
 
             for b in MD5.create().compute_hash(UTF8Encoding(false).get_bytes(Path.get_full_path(project))) do
                 builder.append("{b:x2}");
@@ -91,9 +91,9 @@ namespace Analyser is
                 request_json(HOST_CALL_REQUEST(tool, arguments)),
                 idle_timeout_seconds,
                 true
-            );
+            )
 
-            let result = WIRE.try_get_string(reply, "result");
+            let result = WIRE.try_get_string(reply, "result")
 
             if !result? then
                 throw Exception("the pool host returned no result for the call");
@@ -111,24 +111,24 @@ namespace Analyser is
         // The host's status at an explicit socket path, or null when
         // nothing is listening there or it does not answer.
         info_at(socket_path: string) -> INFO_REPLY? static is
-            let probe = connect_with_handshake(socket_path);
+            let probe = connect_with_handshake(socket_path)
 
             if !probe? then
                 return null;
             fi
 
-            let client = probe;
+            let client = probe
 
             try
-                write_line(client, request_json(TRIVIAL_REQUEST("info")));
+                write_line(client, request_json(TRIVIAL_REQUEST("info")))
 
-                let reply = read_reply(client);
+                let reply = read_reply(client)
 
                 if !reply? then
                     return null;
                 fi
 
-                let frame = parse(reply);
+                let frame = parse(reply)
 
                 if !frame? then
                     return null;
@@ -156,7 +156,7 @@ namespace Analyser is
                     request_json(TRIVIAL_REQUEST("release")),
                     0,
                     false
-                );
+                )
 
                 return WIRE.try_get_bool(reply, "released");
             catch ex: Exception
@@ -173,12 +173,12 @@ namespace Analyser is
                 request_json(TRIVIAL_REQUEST("heap_check")),
                 idle_timeout_seconds,
                 true
-            );
+            )
 
-            let state = JsonSerializer.deserialize[HEAP_REPLY](reply.to_string(), WIRE.options);
+            let state = JsonSerializer.deserialize[HEAP_REPLY](reply.to_string(), WIRE.options)
 
             assert state? else
-                Exception("the pool host returned no heap-check state");
+                Exception("the pool host returned no heap-check state")
 
             return state;
         si
@@ -206,9 +206,9 @@ namespace Analyser is
             idle_timeout_seconds: int,
             spawn: bool
         ) -> JsonElement static is
-            let socket_path = socket_path_for(project);
+            let socket_path = socket_path_for(project)
 
-            let connection = connect_with_handshake(socket_path);
+            let connection = connect_with_handshake(socket_path)
 
             if !connection? then
                 if !spawn then
@@ -218,31 +218,31 @@ namespace Analyser is
                 spawn_host(socket_path, project, idle_timeout_seconds);
             fi
 
-            let open = connection ?? connect_with_handshake(socket_path);
+            let open = connection ?? connect_with_handshake(socket_path)
 
             if !open? then
                 throw Exception("the pool host for {project} did not come up");
             fi
 
-            let client = open;
+            let client = open
 
             try
-                write_line(client, request_line);
+                write_line(client, request_line)
 
-                let reply = read_reply(client);
+                let reply = read_reply(client)
 
                 if !reply? then
                     throw Exception("the pool host closed the connection without a reply");
                 fi
 
-                let frame = parse(reply);
+                let frame = parse(reply)
 
                 if !frame? then
                     throw Exception("the pool host reply was not JSON");
                 fi
 
                 if WIRE.try_get_bool(frame, "ok") == false then
-                    let error = WIRE.try_get_string(frame, "error");
+                    let error = WIRE.try_get_string(frame, "error")
 
                     throw Exception(error ?? "the pool host rejected the request");
                 fi
@@ -258,13 +258,13 @@ namespace Analyser is
         // unlink the stale socket, and let the caller's spawn path start a
         // fresh one. Null when nothing is listening.
         connect_with_handshake(socket_path: string) -> Socket? static is
-            let probe = try_connect(socket_path);
+            let probe = try_connect(socket_path)
 
             if !probe? then
                 return null;
             fi
 
-            let client = probe;
+            let client = probe
 
             if hello_matches(client) then
                 return client;
@@ -272,13 +272,13 @@ namespace Analyser is
 
             // Some host from another ghul-mcp build holds the socket.
             try
-                write_line(client, request_json(TRIVIAL_REQUEST("shutdown")));
+                write_line(client, request_json(TRIVIAL_REQUEST("shutdown")))
 
                 read_reply(client);
             catch ex: Exception
             yrt
 
-            client.close();
+            client.close()
 
             try
                 File.delete(socket_path);
@@ -293,15 +293,15 @@ namespace Analyser is
                 write_line(
                     client,
                     request_json(HELLO_REQUEST(PROTOCOL_VERSION))
-                );
+                )
 
-                let reply = read_reply(client);
+                let reply = read_reply(client)
 
                 if !reply? then
                     return false;
                 fi
 
-                let frame = parse(reply);
+                let frame = parse(reply)
 
                 if !frame? then
                     return false;
@@ -318,33 +318,33 @@ namespace Analyser is
         si
 
         try_connect(socket_path: string) -> Socket? static is
-            let client = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED);
+            let client = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED)
 
             try
-                client.connect(UnixDomainSocketEndPoint(socket_path));
+                client.connect(UnixDomainSocketEndPoint(socket_path))
                 return client;
             catch ex: Exception
-                client.close();
+                client.close()
                 return null;
             yrt
         si
 
         spawn_host(socket_path: string, project: string, idle_timeout_seconds: int) static is
-            let assembly = Assembly.get_entry_assembly();
+            let assembly = Assembly.get_entry_assembly()
 
             if !assembly? then
                 throw Exception("could not locate the ghul-mcp assembly to spawn a pool host");
             fi
 
-            let assembly_location = assembly.location;
+            let assembly_location = assembly.location
 
             if assembly_location.length == 0 then
                 throw Exception("the ghul-mcp assembly has no location to spawn a pool host from");
             fi
 
-            let log_path = socket_log_for(socket_path);
+            let log_path = socket_log_for(socket_path)
 
-            let start_info = ProcessStartInfo();
+            let start_info = ProcessStartInfo()
 
             // The variable parts - the assembly, socket and project paths -
             // travel as positional arguments ($0..$4), never interpolated
@@ -355,7 +355,7 @@ namespace Analyser is
             // front end whose spawn started it) and the log redirection
             // (the front end's stdout carries protocol JSON and must stay
             // clean).
-            start_info.file_name = "/bin/sh";
+            start_info.file_name = "/bin/sh"
             for argument in [
                 "-c",
                 "exec setsid dotnet \"$0\" --pool-host \"$1\" --project \"$2\" "
@@ -368,7 +368,7 @@ namespace Analyser is
             ] do
                 start_info.argument_list.add(argument);
             od
-            start_info.use_shell_execute = false;
+            start_info.use_shell_execute = false
 
             if !Process.start(start_info)? then
                 throw Exception("failed to start the pool host for {project}");
@@ -377,11 +377,11 @@ namespace Analyser is
             // Wait for the socket to accept connections, not merely to
             // exist: the host deletes and rebinds its socket at startup, so
             // a file appearing early says nothing about reachability.
-            let deadline = System.Diagnostics.Stopwatch.start_new();
+            let deadline = System.Diagnostics.Stopwatch.start_new()
 
             do
                 if let probe: Socket = try_connect(socket_path) then
-                    probe.close();
+                    probe.close()
                     return;
                 fi
 
@@ -394,20 +394,20 @@ namespace Analyser is
         si
 
         write_line(client: Socket, line: string) static is
-            let stream = NetworkStream(client, false);
-            let writer = StreamWriter(stream, UTF8Encoding(false));
+            let stream = NetworkStream(client, false)
+            let writer = StreamWriter(stream, UTF8Encoding(false))
 
-            writer.auto_flush = true;
-            writer.write_line(line);
+            writer.auto_flush = true
+            writer.write_line(line)
             writer.dispose();
         si
 
         read_reply(client: Socket) -> string? static is
-            let stream = NetworkStream(client, false);
-            let reader = StreamReader(stream, UTF8Encoding(false));
+            let stream = NetworkStream(client, false)
+            let reader = StreamReader(stream, UTF8Encoding(false))
 
             do
-                let line = reader.read_line();
+                let line = reader.read_line()
 
                 if !line? then
                     return null;
@@ -440,9 +440,9 @@ namespace Analyser is
     // list is what the `sessions` tool has to enumerate), and forwards
     // each tool call to that project's host.
     class PROJECT_HOSTS is
-        _default_project: string?;
-        _idle_timeout_seconds: int;
-        _touched: LIST[string];
+        _default_project: string?
+        _idle_timeout_seconds: int
+        _touched: LIST[string]
 
         init(default_project: string?, idle_timeout_seconds: int) is
             if default_project? /\ default_project.length > 0 then
@@ -455,18 +455,18 @@ namespace Analyser is
                 _default_project = Path.get_full_path(".");
             fi
 
-            _idle_timeout_seconds = idle_timeout_seconds;
+            _idle_timeout_seconds = idle_timeout_seconds
             _touched = LIST[string]();
         si
 
-        default_project: string? => _default_project;
+        default_project: string? => _default_project
 
-        idle_timeout_seconds: int => _idle_timeout_seconds;
+        idle_timeout_seconds: int => _idle_timeout_seconds
 
         // Every project this front end has routed a call to, in first-use
         // order. The hosts own the sessions, so this list is the only local
         // record of what the `sessions` tool can enumerate.
-        touched() -> LIST[string] => _touched;
+        touched() -> LIST[string] => _touched
 
         resolve(project: string?) -> string is
             if project? /\ project.length > 0 then
@@ -481,7 +481,7 @@ namespace Analyser is
         si
 
         route(name: string, arguments: JsonElement) -> string is
-            let project = resolve(WIRE.try_get_string(arguments, "project"));
+            let project = resolve(WIRE.try_get_string(arguments, "project"))
 
             if !_touched.contains(project) then
                 _touched.add(project);
@@ -492,29 +492,29 @@ namespace Analyser is
     si
 
     class HELLO_REQUEST is
-        op: string public;
-        protocol: int public;
+        op: string public
+        protocol: int public
 
         init(protocol: int) is
-            op = "hello";
+            op = "hello"
             self.protocol = protocol;
         si
     si
 
     class HOST_CALL_REQUEST is
-        op: string public;
-        tool: string public;
-        arguments: JsonElement public;
+        op: string public
+        tool: string public
+        arguments: JsonElement public
 
         init(tool: string, arguments: JsonElement) is
-            op = "call";
-            self.tool = tool;
+            op = "call"
+            self.tool = tool
             self.arguments = arguments;
         si
     si
 
     class TRIVIAL_REQUEST is
-        op: string public;
+        op: string public
 
         init(op: string) is
             self.op = op;

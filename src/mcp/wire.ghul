@@ -1,8 +1,8 @@
 namespace MCP is
-    use System.Text.Json.JsonElement;
-    use System.Text.Json.JsonSerializer;
-    use System.Text.Json.JsonSerializerOptions;
-    use System.Text.Json.JsonValueKind;
+    use System.Text.Json.JsonElement
+    use System.Text.Json.JsonSerializer
+    use System.Text.Json.JsonSerializerOptions
+    use System.Text.Json.JsonValueKind
 
     // Converts snake_case member names to the camelCase wire names MCP
     // specifies, in both directions, so DTOs stay idiomatic ghūl.
@@ -10,14 +10,14 @@ namespace MCP is
         init() is si
 
         convert_name(name: string) -> string is
-            let result = System.Text.StringBuilder();
-            let upper_next mut = false;
+            let result = System.Text.StringBuilder()
+            let upper_next mut = false
 
             for c in name do
                 if c == '_' then
                     upper_next = true;
                 elif upper_next then
-                    result.append(char.to_upper(c));
+                    result.append(char.to_upper(c))
                     upper_next = false;
                 else
                     result.append(c);
@@ -33,13 +33,13 @@ namespace MCP is
     // escapes them inside strings), so read_line is a complete framing
     // primitive.
     class WIRE is
-        _options: JsonSerializerOptions? static;
+        _options: JsonSerializerOptions? static
 
         options: JsonSerializerOptions static is
             if !_options? then
-                let o = JsonSerializerOptions();
+                let o = JsonSerializerOptions()
 
-                o.property_naming_policy = SNAKE_TO_CAMEL_POLICY();
+                o.property_naming_policy = SNAKE_TO_CAMEL_POLICY()
 
                 _options = o;
             fi
@@ -47,17 +47,17 @@ namespace MCP is
             return _options;
         si
 
-        _null_id: JsonElement static;
-        _have_null_id: bool static;
+        _null_id: JsonElement static
+        _have_null_id: bool static
 
         // Default-initialized, so ValueKind is Undefined.
-        _undefined: JsonElement static;
+        _undefined: JsonElement static
 
         // The id to use in error responses to unparseable requests, per
         // JSON-RPC: an explicit null.
         null_id: JsonElement static is
             if !_have_null_id then
-                _null_id = JsonSerializer.deserialize[JsonElement]("null", options);
+                _null_id = JsonSerializer.deserialize[JsonElement]("null", options)
                 _have_null_id = true;
             fi
 
@@ -69,7 +69,7 @@ namespace MCP is
         // server replies with a parse error and carries on.
         read_request(reader: IO.TextReader) -> REQUEST? static is
             do
-                let line = reader.read_line();
+                let line = reader.read_line()
 
                 if !line? then
                     return null;
@@ -84,8 +84,8 @@ namespace MCP is
         si
 
         write(writer: IO.TextWriter, message: object) static is
-            writer.write(JsonSerializer.serialize(message, message.get_type(), options));
-            writer.write("\n");
+            writer.write(JsonSerializer.serialize(message, message.get_type(), options))
+            writer.write("\n")
             writer.flush();
         si
 
@@ -97,7 +97,7 @@ namespace MCP is
             fi
 
             try
-                let property = element.get_property(name);
+                let property = element.get_property(name)
 
                 if property.value_kind == JsonValueKind.STRING then
                     return property.get_string();
@@ -113,7 +113,7 @@ namespace MCP is
         try_get_int(element: JsonElement, name: string) -> int static is
             if element.value_kind == JsonValueKind.OBJECT then
                 try
-                    let property = element.get_property(name);
+                    let property = element.get_property(name)
 
                     if property.value_kind == JsonValueKind.NUMBER then
                         return property.get_int32();
@@ -133,7 +133,7 @@ namespace MCP is
             fi
 
             try
-                let property = element.get_property(name);
+                let property = element.get_property(name)
 
                 if property.value_kind == JsonValueKind.TRUE then
                     return true;
@@ -148,14 +148,14 @@ namespace MCP is
         // isn't an object, lacks the property, the property isn't an array,
         // or an element isn't a string.
         try_get_string_array(element: JsonElement, name: string) -> Collections.LIST[string] static is
-            let result = Collections.LIST[string]();
+            let result = Collections.LIST[string]()
 
             if element.value_kind != JsonValueKind.OBJECT then
                 return result;
             fi
 
             try
-                let property = element.get_property(name);
+                let property = element.get_property(name)
 
                 if property.value_kind != JsonValueKind.ARRAY then
                     return result;
@@ -163,7 +163,7 @@ namespace MCP is
 
                 for item in property.enumerate_array() do
                     if item.value_kind == JsonValueKind.STRING then
-                        let text = item.get_string();
+                        let text = item.get_string()
 
                         if text? then
                             result.add(text);
@@ -190,10 +190,10 @@ namespace MCP is
     si
 
     class REQUEST is
-        jsonrpc: string public;
-        id: JsonElement public;
-        method: string public;
-        params: JsonElement public;
+        jsonrpc: string public
+        id: JsonElement public
+        method: string public
+        params: JsonElement public
 
         // JsonSerializer.deserialize bypasses this and assigns the fields by
         // reflection.
@@ -204,35 +204,35 @@ namespace MCP is
     si
 
     class RESPONSE is
-        jsonrpc: string public;
-        id: JsonElement public;
-        result: object public;
+        jsonrpc: string public
+        id: JsonElement public
+        result: object public
 
         init(id: JsonElement, result: object) is
-            jsonrpc = "2.0";
-            self.id = id;
+            jsonrpc = "2.0"
+            self.id = id
             self.result = result;
         si
     si
 
     class ERROR_RESPONSE is
-        jsonrpc: string public;
-        id: JsonElement public;
-        error: ERROR_BODY public;
+        jsonrpc: string public
+        id: JsonElement public
+        error: ERROR_BODY public
 
         init(id: JsonElement, code: int, message: string) is
-            jsonrpc = "2.0";
-            self.id = id;
+            jsonrpc = "2.0"
+            self.id = id
             error = ERROR_BODY(code, message);
         si
     si
 
     class ERROR_BODY is
-        code: int public;
-        message: string public;
+        code: int public
+        message: string public
 
         init(code: int, message: string) is
-            self.code = code;
+            self.code = code
             self.message = message;
         si
     si

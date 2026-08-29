@@ -1,32 +1,32 @@
 namespace Analyser is
-    use System.Exception;
-    use System.Text.Json.JsonElement;
-    use System.Text.Json.JsonSerializer;
-    use System.Text.Json.JsonValueKind;
-    use System.Text.UTF8Encoding;
+    use System.Exception
+    use System.Text.Json.JsonElement
+    use System.Text.Json.JsonSerializer
+    use System.Text.Json.JsonValueKind
+    use System.Text.UTF8Encoding
 
-    use System.Net.Sockets.AddressFamily;
-    use System.Net.Sockets.NetworkStream;
-    use System.Net.Sockets.ProtocolType;
-    use System.Net.Sockets.SelectMode;
-    use System.Net.Sockets.Socket;
-    use System.Net.Sockets.SocketType;
-    use System.Net.Sockets.UnixDomainSocketEndPoint;
+    use System.Net.Sockets.AddressFamily
+    use System.Net.Sockets.NetworkStream
+    use System.Net.Sockets.ProtocolType
+    use System.Net.Sockets.SelectMode
+    use System.Net.Sockets.Socket
+    use System.Net.Sockets.SocketType
+    use System.Net.Sockets.UnixDomainSocketEndPoint
 
-    use Analysis.Protocol.DIAGNOSTIC;
-    use Analysis.Protocol.Response;
+    use Analysis.Protocol.DIAGNOSTIC
+    use Analysis.Protocol.Response
 
-    use Collections.LIST;
-    use Collections.MAP;
+    use Collections.LIST
+    use Collections.MAP
 
-    use IO.File;
-    use IO.Path;
-    use IO.StreamReader;
-    use IO.StreamWriter;
-    use IO.Std;
+    use IO.File
+    use IO.Path
+    use IO.StreamReader
+    use IO.StreamWriter
+    use IO.Std
 
-    use MCP.QUERY_LOG;
-    use MCP.WIRE;
+    use MCP.QUERY_LOG
+    use MCP.WIRE
 
     // The per-project pool host: a Unix-domain-socket serve mode standing in
     // for the MCP stdio transport when the caller is another process - the
@@ -52,13 +52,13 @@ namespace Analyser is
     // cases (a cold spawn, a whole-project compile) are the ones this
     // architecture exists to amortise.
     class POOL_HOST is
-        PROTOCOL_VERSION: int static => 1;
+        PROTOCOL_VERSION: int static => 1
 
         // Bound on how long a connection may sit idle mid-request. The
         // accept loop is single-threaded, so a client that connects and
         // never finishes writing its request would otherwise stall every
         // other caller behind it indefinitely.
-        SOCKET_TIMEOUT_MS: int static => 10000;
+        SOCKET_TIMEOUT_MS: int static => 10000
 
         // How long the host waits for a connection before giving up and
         // exiting. It holds a warm analyser, so an editing session that
@@ -66,42 +66,42 @@ namespace Analyser is
         // nothing - the same trade the analyser's own idle timeout makes,
         // and the same default. Clients relaunch on demand, so the only
         // cost of exiting early is one cold analyser.
-        DEFAULT_IDLE_TIMEOUT_SECONDS: int static => 1800;
+        DEFAULT_IDLE_TIMEOUT_SECONDS: int static => 1800
 
         // Granularity of the wait. The accept loop cannot block indefinitely
         // and still notice the timeout, so it polls in chunks; the wakeups
         // are far too cheap to register against the process's CPU time.
-        POLL_CHUNK_SECONDS: int static => 5;
+        POLL_CHUNK_SECONDS: int static => 5
 
-        _project: string;
-        _idle_timeout_seconds: int;
-        _server_version: string;
-        _handlers: MAP[string, (ANALYSER_SESSION, JsonElement) -> string];
-        _session: ANALYSER_SESSION?;
-        _shutdown: bool;
-        _query_log: QUERY_LOG;
-        _started: System.DateTime;
-        _last_activity: System.DateTime;
-        _connections: long;
-        _requests: long;
-        _errors: long;
-        _calls: long;
-        _edits: long;
+        _project: string
+        _idle_timeout_seconds: int
+        _server_version: string
+        _handlers: MAP[string, (ANALYSER_SESSION, JsonElement) -> string]
+        _session: ANALYSER_SESSION?
+        _shutdown: bool
+        _query_log: QUERY_LOG
+        _started: System.DateTime
+        _last_activity: System.DateTime
+        _connections: long
+        _requests: long
+        _errors: long
+        _calls: long
+        _edits: long
 
         init(project: string, idle_timeout_seconds: int, server_version: string, query_log_path: string?) is
-            _project = Path.get_full_path(project);
-            _idle_timeout_seconds = idle_timeout_seconds;
-            _server_version = server_version;
-            _handlers = ANALYSER_TOOLS.handlers();
-            _session = null;
-            _shutdown = false;
-            _query_log = QUERY_LOG(query_log_path);
-            _started = System.DateTime.utc_now;
-            _last_activity = _started;
-            _connections = 0L;
-            _requests = 0L;
-            _errors = 0L;
-            _calls = 0L;
+            _project = Path.get_full_path(project)
+            _idle_timeout_seconds = idle_timeout_seconds
+            _server_version = server_version
+            _handlers = ANALYSER_TOOLS.handlers()
+            _session = null
+            _shutdown = false
+            _query_log = QUERY_LOG(query_log_path)
+            _started = System.DateTime.utc_now
+            _last_activity = _started
+            _connections = 0L
+            _requests = 0L
+            _errors = 0L
+            _calls = 0L
             _edits = 0L;
         si
 
@@ -110,12 +110,12 @@ namespace Analyser is
                 File.delete(socket_path);
             fi
 
-            let listener = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED);
+            let listener = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED)
 
-            listener.bind(UnixDomainSocketEndPoint(socket_path));
-            listener.listen(16);
+            listener.bind(UnixDomainSocketEndPoint(socket_path))
+            listener.listen(16)
 
-            Std.error.write_line("ghul-mcp: pool host listening on {socket_path} for {_project}");
+            Std.error.write_line("ghul-mcp: pool host listening on {socket_path} for {_project}")
 
             // A disabled timeout waits indefinitely, which is what Poll does
             // with a negative timeout.
@@ -124,19 +124,19 @@ namespace Analyser is
                     -1
                 else
                     POLL_CHUNK_SECONDS * 1000000
-                fi;
+                fi
 
             try
-                let idle_seconds mut = 0;
+                let idle_seconds mut = 0
 
                 do
                     if !listener.poll(poll_microseconds, SelectMode.SELECT_READ) then
-                        idle_seconds = idle_seconds + POLL_CHUNK_SECONDS;
+                        idle_seconds = idle_seconds + POLL_CHUNK_SECONDS
 
                         if _idle_timeout_seconds > 0 /\ idle_seconds >= _idle_timeout_seconds then
                             Std.error.write_line(
                                 "ghul-mcp: pool host exiting after {_idle_timeout_seconds}s idle"
-                            );
+                            )
 
                             break;
                         fi
@@ -148,9 +148,9 @@ namespace Analyser is
                         continue;
                     fi
 
-                    idle_seconds = 0;
+                    idle_seconds = 0
 
-                    let client = listener.accept();
+                    let client = listener.accept()
 
                     try
                         handle_connection(client);
@@ -165,7 +165,7 @@ namespace Analyser is
                     fi
                 od
             finally
-                listener.close();
+                listener.close()
 
                 try
                     File.delete(socket_path);
@@ -177,52 +177,52 @@ namespace Analyser is
         si
 
         handle_connection(client: Socket) is
-            client.receive_timeout = SOCKET_TIMEOUT_MS;
-            client.send_timeout = SOCKET_TIMEOUT_MS;
+            client.receive_timeout = SOCKET_TIMEOUT_MS
+            client.send_timeout = SOCKET_TIMEOUT_MS
 
-            let stream = NetworkStream(client, false);
-            let encoding = UTF8Encoding(false);
+            let stream = NetworkStream(client, false)
+            let encoding = UTF8Encoding(false)
 
-            let reader = StreamReader(stream, encoding);
-            let writer = StreamWriter(stream, encoding);
+            let reader = StreamReader(stream, encoding)
+            let writer = StreamWriter(stream, encoding)
 
-            writer.auto_flush = true;
+            writer.auto_flush = true
 
-            let line = reader.read_line();
+            let line = reader.read_line()
 
             if !line? then
                 return;
             fi
 
-            let frame = parse_frame(line);
+            let frame = parse_frame(line)
 
             if !frame? then
-                writer.write_line(error_json("could not parse the hello request"));
+                writer.write_line(error_json("could not parse the hello request"))
                 return;
             fi
 
-            let op = WIRE.try_get_string(frame, "op");
+            let op = WIRE.try_get_string(frame, "op")
 
             if op? /\ op =~ "hello" then
-                let protocol = WIRE.try_get_int(frame, "protocol");
+                let protocol = WIRE.try_get_int(frame, "protocol")
 
                 if protocol != PROTOCOL_VERSION then
                     writer.write_line(
                         error_json(
                             "protocol mismatch: this host speaks version {PROTOCOL_VERSION}"
                         )
-                    );
+                    )
 
                     return;
                 fi
 
-                _connections = _connections + 1L;
+                _connections = _connections + 1L
 
                 writer.write_line(
                     reply_json(HELLO_REPLY(true, PROTOCOL_VERSION, _server_version))
                 );
             else
-                writer.write_line(error_json("expected a hello request first"));
+                writer.write_line(error_json("expected a hello request first"))
                 return;
             fi
 
@@ -230,7 +230,7 @@ namespace Analyser is
             // that finished its business and left the connection open -
             // close it rather than log a connection error for it.
             do
-                let request_line: string? mut = null;
+                let request_line: string? mut = null
 
                 try
                     request_line = reader.read_line();
@@ -251,25 +251,25 @@ namespace Analyser is
         si
 
         handle_request(line: string) -> string is
-            let stopwatch = System.Diagnostics.Stopwatch.start_new();
+            let stopwatch = System.Diagnostics.Stopwatch.start_new()
 
-            _requests = _requests + 1L;
-            _last_activity = System.DateTime.utc_now;
+            _requests = _requests + 1L
+            _last_activity = System.DateTime.utc_now
 
-            let frame = parse_frame(line);
+            let frame = parse_frame(line)
 
-            let op: string? mut = null;
+            let op: string? mut = null
 
             if frame? then
                 op = WIRE.try_get_string(frame, "op");
             fi
 
-            let reply = dispatch_request(frame);
+            let reply = dispatch_request(frame)
 
             // The front end already logs every MCP tool call, so the host
             // logs only what no other process sees: edits from the hook,
             // and failures of any op.
-            let is_error = reply.starts_with("{{\"ok\":false");
+            let is_error = reply.starts_with("{{\"ok\":false")
 
             if is_error \/ op? /\ op =~ "edit" then
                 _query_log.log_op(
@@ -297,7 +297,7 @@ namespace Analyser is
                 return _error_counted("could not parse the request");
             fi
 
-            let op = WIRE.try_get_string(frame, "op");
+            let op = WIRE.try_get_string(frame, "op")
 
             if !op? then
                 return _error_counted("no op in the request");
@@ -314,7 +314,7 @@ namespace Analyser is
             elif op =~ "heap_check" then
                 return handle_heap_check();
             elif op =~ "shutdown" then
-                _shutdown = true;
+                _shutdown = true
 
                 return reply_json(OK_REPLY());
             fi
@@ -323,13 +323,13 @@ namespace Analyser is
         si
 
         _error_counted(message: string) -> string is
-            _errors = _errors + 1L;
+            _errors = _errors + 1L
 
             return error_json(message);
         si
 
         handle_call(frame: JsonElement) -> string is
-            let tool = WIRE.try_get_string(frame, "tool");
+            let tool = WIRE.try_get_string(frame, "tool")
 
             if !tool? \/ tool.length == 0 then
                 return error_json("call requires a tool name");
@@ -339,16 +339,16 @@ namespace Analyser is
                 return error_json("unknown tool: {tool}");
             fi
 
-            let arguments = WIRE.try_get_element(frame, "arguments");
+            let arguments = WIRE.try_get_element(frame, "arguments")
 
             if arguments.value_kind == JsonValueKind.UNDEFINED then
                 return error_json("call requires arguments (an empty object suffices)");
             fi
 
             try
-                let result = ANALYSER_TOOLS.stamped_call(session(), _handlers[tool], arguments);
+                let result = ANALYSER_TOOLS.stamped_call(session(), _handlers[tool], arguments)
 
-                _calls = _calls + 1L;
+                _calls = _calls + 1L
 
                 return reply_json(CALL_REPLY(result));
             catch ex: Exception
@@ -357,7 +357,7 @@ namespace Analyser is
         si
 
         handle_edit(frame: JsonElement) -> string is
-            let file = WIRE.try_get_string(frame, "file");
+            let file = WIRE.try_get_string(frame, "file")
 
             if !file? \/ file.length == 0 then
                 return error_json("edit requires a file path relative to the project");
@@ -374,8 +374,8 @@ namespace Analyser is
             fi
 
             try
-                let response = session().edit_diagnostics(file);
-                let result = LIST[EDIT_DIAGNOSTIC]();
+                let response = session().edit_diagnostics(file)
+                let result = LIST[EDIT_DIAGNOSTIC]()
 
                 for diagnostic in response.diagnostics do
                     if diagnostic.path =~ file then
@@ -391,10 +391,10 @@ namespace Analyser is
                     fi
                 od
 
-                _edits = _edits + 1L;
+                _edits = _edits + 1L
 
-                let reply = EDIT_REPLY(result);
-                reply.compiler_version = session().compiler_version;
+                let reply = EDIT_REPLY(result)
+                reply.compiler_version = session().compiler_version
 
                 return reply_json(reply);
             catch ex: Exception
@@ -403,34 +403,34 @@ namespace Analyser is
         si
 
         handle_info() -> string is
-            let warm mut = false;
-            let pid: int? mut = null;
-            let compiler: string? mut = null;
-            let source_count mut = 0;
-            let analyser_working_set: long? mut = null;
+            let warm mut = false
+            let pid: int? mut = null
+            let compiler: string? mut = null
+            let source_count mut = 0
+            let analyser_working_set: long? mut = null
 
             if let session: ANALYSER_SESSION = _session then
-                warm = true;
-                pid = session.process_id;
-                compiler = session.compiler_version;
-                source_count = session.known_source_count;
+                warm = true
+                pid = session.process_id
+                compiler = session.compiler_version
+                source_count = session.known_source_count
                 analyser_working_set = session.working_set;
             fi
 
-            let now = System.DateTime.utc_now;
+            let now = System.DateTime.utc_now
 
-            let reply = INFO_REPLY(_project, warm, pid, compiler, source_count);
+            let reply = INFO_REPLY(_project, warm, pid, compiler, source_count)
 
-            reply.host_pid = System.Environment.process_id;
-            reply.uptime_seconds = cast int(now.subtract(_started).total_seconds);
-            reply.idle_seconds = cast int(now.subtract(_last_activity).total_seconds);
-            reply.host_working_set = System.Diagnostics.Process.get_current_process().working_set64;
-            reply.analyser_working_set = analyser_working_set;
-            reply.connections = _connections;
-            reply.requests = _requests;
-            reply.errors = _errors;
-            reply.calls = _calls;
-            reply.edits = _edits;
+            reply.host_pid = System.Environment.process_id
+            reply.uptime_seconds = cast int(now.subtract(_started).total_seconds)
+            reply.idle_seconds = cast int(now.subtract(_last_activity).total_seconds)
+            reply.host_working_set = System.Diagnostics.Process.get_current_process().working_set64
+            reply.analyser_working_set = analyser_working_set
+            reply.connections = _connections
+            reply.requests = _requests
+            reply.errors = _errors
+            reply.calls = _calls
+            reply.edits = _edits
 
             return reply_json(reply);
         si
@@ -440,13 +440,13 @@ namespace Analyser is
         si
 
         handle_heap_check() -> string is
-            let current = session();
+            let current = session()
 
             if !current.is_running then
                 return reply_json(HEAP_REPLY(false, false));
             fi
 
-            let healthy = current.send_heap_check();
+            let healthy = current.send_heap_check()
 
             if !healthy then
                 // Watchdog wrote restart and exited; drop the session so a
@@ -465,8 +465,8 @@ namespace Analyser is
                 return session;
             fi
 
-            let session = ANALYSER_SESSION(_project);
-            _session = session;
+            let session = ANALYSER_SESSION(_project)
+            _session = session
 
             return session;
         si
@@ -481,7 +481,7 @@ namespace Analyser is
             catch ex: Exception
             yrt
 
-            _session = null;
+            _session = null
 
             return true;
         si
@@ -505,44 +505,44 @@ namespace Analyser is
         // Rejects an absolute `path` and a `../` escape against the host's
         // own project directory.
         is_within_project(project_directory: string, path: string) -> bool static is
-            let root = Path.get_full_path(project_directory);
-            let resolved = Path.get_full_path(Path.combine(root, path));
+            let root = Path.get_full_path(project_directory)
+            let resolved = Path.get_full_path(Path.combine(root, path))
 
             let root_with_separator =
                 if root.ends_with(Path.directory_separator_char) then
                     root
                 else
                     "{root}{Path.directory_separator_char}"
-                fi;
+                fi
 
             return resolved.starts_with(root_with_separator);
         si
     si
 
     class HELLO_REPLY is
-        ok: bool public;
-        protocol: int public;
-        server_version: string public;
+        ok: bool public
+        protocol: int public
+        server_version: string public
 
         init(ok: bool, protocol: int, server_version: string) is
-            self.ok = ok;
-            self.protocol = protocol;
+            self.ok = ok
+            self.protocol = protocol
             self.server_version = server_version;
         si
     si
 
     class CALL_REPLY is
-        ok: bool public;
-        result: string public;
+        ok: bool public
+        result: string public
 
         init(result: string) is
-            ok = true;
+            ok = true
             self.result = result;
         si
     si
 
     class OK_REPLY is
-        ok: bool public;
+        ok: bool public
 
         init() is
             ok = true;
@@ -550,96 +550,96 @@ namespace Analyser is
     si
 
     class ERROR_REPLY is
-        ok: bool public;
-        error: string public;
+        ok: bool public
+        error: string public
 
         init(error: string) is
-            ok = false;
+            ok = false
             self.error = error;
         si
     si
 
     class EDIT_REPLY is
-        ok: bool public;
-        diagnostics: LIST[EDIT_DIAGNOSTIC] public;
+        ok: bool public
+        diagnostics: LIST[EDIT_DIAGNOSTIC] public
 
         // Version of the ghul.compiler the analyser answering this edit was
         // built from, additive to the protocol: a host from before it
         // existed reports null and clients skip the stamp.
-        compiler_version: string? public;
+        compiler_version: string? public
 
         init(diagnostics: LIST[EDIT_DIAGNOSTIC]) is
-            ok = true;
-            self.diagnostics = diagnostics;
+            ok = true
+            self.diagnostics = diagnostics
             self.compiler_version = null;
         si
     si
 
     class EDIT_DIAGNOSTIC is
-        severity: int public;
-        start_line: int public;
-        start_column: int public;
-        code: string public;
-        message: string public;
+        severity: int public
+        start_line: int public
+        start_column: int public
+        code: string public
+        message: string public
 
         init(severity: int, start_line: int, start_column: int, code: string, message: string) is
-            self.severity = severity;
-            self.start_line = start_line;
-            self.start_column = start_column;
-            self.code = code;
+            self.severity = severity
+            self.start_line = start_line
+            self.start_column = start_column
+            self.code = code
             self.message = message;
         si
     si
 
     class INFO_REPLY is
-        ok: bool public;
-        project: string public;
-        warm: bool public;
-        pid: int? public;
-        compiler: string? public;
-        source_count: int public;
+        ok: bool public
+        project: string public
+        warm: bool public
+        pid: int? public
+        compiler: string? public
+        source_count: int public
 
         // Observability fields, additive to the protocol: a host from
         // before they existed reports their zero values.
-        host_pid: int public;
-        uptime_seconds: int public;
-        idle_seconds: int public;
-        host_working_set: long public;
-        analyser_working_set: long? public;
-        connections: long public;
-        requests: long public;
-        errors: long public;
-        calls: long public;
-        edits: long public;
+        host_pid: int public
+        uptime_seconds: int public
+        idle_seconds: int public
+        host_working_set: long public
+        analyser_working_set: long? public
+        connections: long public
+        requests: long public
+        errors: long public
+        calls: long public
+        edits: long public
 
         init(project: string, warm: bool, pid: int?, compiler: string?, source_count: int) is
-            ok = true;
-            self.project = project;
-            self.warm = warm;
-            self.pid = pid;
-            self.compiler = compiler;
+            ok = true
+            self.project = project
+            self.warm = warm
+            self.pid = pid
+            self.compiler = compiler
             self.source_count = source_count;
         si
     si
 
     class RELEASE_REPLY is
-        ok: bool public;
-        released: bool public;
+        ok: bool public
+        released: bool public
 
         init(released: bool) is
-            ok = true;
+            ok = true
             self.released = released;
         si
     si
 
     class HEAP_REPLY is
-        ok: bool public;
-        running: bool public;
-        healthy: bool public;
+        ok: bool public
+        running: bool public
+        healthy: bool public
 
         init(running: bool, healthy: bool) is
-            ok = true;
-            self.running = running;
+            ok = true
+            self.running = running
             self.healthy = healthy;
         si
     si
