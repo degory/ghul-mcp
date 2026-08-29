@@ -1,23 +1,23 @@
 namespace Analyser is
-    use System.Text.StringBuilder;
-    use System.Text.Json.JsonElement;
+    use System.Text.StringBuilder
+    use System.Text.Json.JsonElement
 
-    use Collections.LIST;
-    use Collections.MAP;
+    use Collections.LIST
+    use Collections.MAP
 
-    use Analysis.Protocol.DIAGNOSTIC;
-    use Analysis.Protocol.INLAY_HINT;
-    use Analysis.Protocol.LOCATION_DTO;
-    use Analysis.Protocol.SYMBOL_DTO;
-    use Analysis.Protocol.MEMBER_DTO;
-    use Analysis.Protocol.Response;
+    use Analysis.Protocol.DIAGNOSTIC
+    use Analysis.Protocol.INLAY_HINT
+    use Analysis.Protocol.LOCATION_DTO
+    use Analysis.Protocol.SYMBOL_DTO
+    use Analysis.Protocol.MEMBER_DTO
+    use Analysis.Protocol.Response
 
-    use IO.File;
-    use IO.Path;
+    use IO.File
+    use IO.Path
 
-    use MCP.SERVER;
-    use MCP.TOOL;
-    use MCP.WIRE;
+    use MCP.SERVER
+    use MCP.TOOL
+    use MCP.WIRE
 
     // Registers the semantic-query tools onto the MCP server, routing each
     // call through the pool: the `project` argument (absolute path to a
@@ -31,7 +31,7 @@ namespace Analyser is
     // server would silently answer every query against `main`.
     class ANALYSER_TOOLS is
         PROJECT_PROPERTY: string static =>
-            "\"project\": {{\"type\": \"string\", \"description\": \"absolute path to the ghūl project directory (the one holding the .ghulproj). Optional - defaults to the server's --default-project.\"}}";
+            "\"project\": {{\"type\": \"string\", \"description\": \"absolute path to the ghūl project directory (the one holding the .ghulproj). Optional - defaults to the server's --default-project.\"}}"
 
         POSITION_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
@@ -39,24 +39,24 @@ namespace Analyser is
             "\"line\": {{\"type\": \"integer\", \"description\": \"1-based line\"}},"
             "\"column\": {{\"type\": \"integer\", \"description\": \"1-based column\"}},"
             "{PROJECT_PROPERTY}"
-            "}}, \"required\": [\"file\", \"line\", \"column\"]}}";
+            "}}, \"required\": [\"file\", \"line\", \"column\"]}}"
 
         NAME_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "\"name\": {{\"type\": \"string\", \"description\": \"exact symbol name (case-insensitive); leading identifier of a declaration, e.g. `ANALYSER_SESSION`, `render_custom_attribute_line`\"}},"
             "{PROJECT_PROPERTY}"
-            "}}, \"required\": [\"name\"]}}";
+            "}}, \"required\": [\"name\"]}}"
 
         TYPE_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "\"type\": {{\"type\": \"string\", \"description\": \"type expression as it would appear in ghūl source, e.g. `System.Text.StringBuilder`, `Semantic.Symbols.SIGNATURE_PART`, `Collections.LIST[string]`; fully-qualified for imported types\"}},"
             "{PROJECT_PROPERTY}"
-            "}}, \"required\": [\"type\"]}}";
+            "}}, \"required\": [\"type\"]}}"
 
         PROJECT_ONLY_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "{PROJECT_PROPERTY}"
-            "}}}}";
+            "}}}}"
 
         DIAGNOSTICS_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
@@ -66,20 +66,20 @@ namespace Analyser is
             "\"exclude_codes\": {{\"type\": \"array\", \"items\": {{\"type\": \"string\"}}, \"description\": \"drop diagnostics carrying any of these codes - mute a noisy category to see what remains\"}},"
             "\"hints_for\": {{\"type\": \"array\", \"items\": {{\"type\": \"string\"}}, \"description\": \"project-relative source paths to include editor-only hint diagnostics (narrowing, narrowing-kill, and similar) for. Empty or absent suppresses all hints - hints are otherwise dropped because ghul-mcp doesn't tell the analyser what's open.\"}},"
             "{PROJECT_PROPERTY}"
-            "}}}}";
+            "}}}}"
 
         INLAY_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "\"file\": {{\"type\": \"string\", \"description\": \"project-relative source path to read narrowing inlays for\"}},"
             "\"code\": {{\"type\": \"string\", \"description\": \"restrict to inlays carrying this code (e.g. `narrowing-isa`, `narrowing-killed`, `narrowing-if-let`); the by-code breakdown lists the codes present\"}},"
             "{PROJECT_PROPERTY}"
-            "}}, \"required\": [\"file\"]}}";
+            "}}, \"required\": [\"file\"]}}"
 
         QUERY_SCHEMA: string static =>
             "{{\"type\": \"object\", \"properties\": {{"
             "\"query\": {{\"type\": \"string\", \"description\": \"case-insensitive substring to filter symbol descriptions; empty or omitted returns all\"}},"
             "{PROJECT_PROPERTY}"
-            "}}}}";
+            "}}}}"
 
         // Run one entry-table tool against a session and stamp the result
         // with the project and compiler that answered it. The stamp is the
@@ -93,18 +93,18 @@ namespace Analyser is
             run: (ANALYSER_SESSION, JsonElement) -> string,
             arguments: JsonElement
         ) -> string static is
-            let result = run(session, arguments);
+            let result = run(session, arguments)
 
             // Read the version after `run`, not before: the session spawns
             // lazily on its first query, so the LISTEN frame carrying the
             // compiler version has only been seen by then.
-            let compiler = session.compiler_version;
+            let compiler = session.compiler_version
             let compiler_text =
                 if compiler? then
                     "ghul.compiler {compiler}"
                 else
                     "ghul.compiler version unknown"
-                fi;
+                fi
 
             return "[{session.project_directory} · {compiler_text}]\n{result}";
         si
@@ -117,7 +117,7 @@ namespace Analyser is
         // release_session, heap_check) are front-end concerns and are
         // registered separately.
         table() -> LIST[TOOL_ENTRY] static is
-            let result = LIST[TOOL_ENTRY]();
+            let result = LIST[TOOL_ENTRY]()
 
             result.add(
                 TOOL_ENTRY(
@@ -126,7 +126,7 @@ namespace Analyser is
                     DIAGNOSTICS_SCHEMA,
                     (session, args) => run_diagnostics(session, args)
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -135,7 +135,7 @@ namespace Analyser is
                     INLAY_SCHEMA,
                     (session, args) => run_inlays(session, args)
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -144,7 +144,7 @@ namespace Analyser is
                     POSITION_SCHEMA,
                     (session, args) => run_hover(session, args)
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -153,7 +153,7 @@ namespace Analyser is
                     POSITION_SCHEMA,
                     (session, args) => run_position_locations(session, args, "definition")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -162,7 +162,7 @@ namespace Analyser is
                     POSITION_SCHEMA,
                     (session, args) => run_position_locations(session, args, "references")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -171,7 +171,7 @@ namespace Analyser is
                     POSITION_SCHEMA,
                     (session, args) => run_position_locations(session, args, "implementations")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -180,7 +180,7 @@ namespace Analyser is
                     QUERY_SCHEMA,
                     (session, args) => run_symbols(session, args)
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -189,7 +189,7 @@ namespace Analyser is
                     NAME_SCHEMA,
                     (session, args) => run_by_name(session, args, "hover")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -198,7 +198,7 @@ namespace Analyser is
                     NAME_SCHEMA,
                     (session, args) => run_by_name(session, args, "definition")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -207,7 +207,7 @@ namespace Analyser is
                     NAME_SCHEMA,
                     (session, args) => run_by_name(session, args, "references")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -216,7 +216,7 @@ namespace Analyser is
                     NAME_SCHEMA,
                     (session, args) => run_by_name(session, args, "implementations")
                 )
-            );
+            )
 
             result.add(
                 TOOL_ENTRY(
@@ -225,7 +225,7 @@ namespace Analyser is
                     TYPE_SCHEMA,
                     (session, args) => run_members(session, args)
                 )
-            );
+            )
 
             return result;
         si
@@ -235,10 +235,10 @@ namespace Analyser is
         // own, so a project's hook-fed host answers with warm, current
         // state.
         tools(route: (string, JsonElement) -> string) -> LIST[TOOL] static is
-            let result = LIST[TOOL]();
+            let result = LIST[TOOL]()
 
             for entry in table() do
-                let name = entry.name;
+                let name = entry.name
 
                 result.add(
                     TOOL(
@@ -255,7 +255,7 @@ namespace Analyser is
 
         // The host-side dispatch table: tool name to session-level handler.
         handlers() -> MAP[string, (ANALYSER_SESSION, JsonElement) -> string] static is
-            let result = MAP[string, (ANALYSER_SESSION, JsonElement) -> string]();
+            let result = MAP[string, (ANALYSER_SESSION, JsonElement) -> string]()
 
             for entry in table() do
                 result[entry.name] = entry.run;
@@ -275,7 +275,7 @@ namespace Analyser is
                     "{{\"type\": \"object\", \"properties\": {{}}}}",
                     arguments => run_sessions(hosts)
                 )
-            );
+            )
 
             server.add_tool(
                 TOOL(
@@ -284,7 +284,7 @@ namespace Analyser is
                     "{{\"type\": \"object\", \"properties\": {{}}}}",
                     arguments => POOL_STATUS.render()
                 )
-            );
+            )
 
             server.add_tool(
                 TOOL(
@@ -293,7 +293,7 @@ namespace Analyser is
                     "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",
                     arguments => run_release_session(hosts, arguments)
                 )
-            );
+            )
 
             server.add_tool(
                 TOOL(
@@ -306,36 +306,36 @@ namespace Analyser is
         si
 
         run_sessions(hosts: PROJECT_HOSTS) -> string static is
-            let result = StringBuilder();
-            let warm_count mut = 0;
+            let result = StringBuilder()
+            let warm_count mut = 0
 
             for project in hosts.touched() do
-                let info = HOST_CLIENT.info_if_running(project);
+                let info = HOST_CLIENT.info_if_running(project)
 
                 if info? /\ info.warm then
-                    let pid = info.pid;
+                    let pid = info.pid
                     let pid_text =
                         if pid? then
                             "pid {pid}"
                         else
                             "not running"
-                        fi;
+                        fi
 
-                    let compiler = info.compiler;
+                    let compiler = info.compiler
                     let compiler_text =
                         if compiler? then
                             "ghul.compiler {compiler}"
                         else
                             "compiler version unknown"
-                        fi;
+                        fi
 
-                    result.append("{project} ({pid_text}, {compiler_text}, {info.source_count} sources)\n");
+                    result.append("{project} ({pid_text}, {compiler_text}, {info.source_count} sources)\n")
                     warm_count = warm_count + 1;
                 fi
             od
 
             if warm_count == 0 then
-                let default_project = hosts.default_project;
+                let default_project = hosts.default_project
 
                 if default_project? then
                     return "no sessions warm yet - default project: {default_project}";
@@ -352,14 +352,14 @@ namespace Analyser is
         si
 
         run_release_session(hosts: PROJECT_HOSTS, arguments: JsonElement) -> string static is
-            let project = WIRE.try_get_string(arguments, "project");
+            let project = WIRE.try_get_string(arguments, "project")
 
             let target =
                 if project? /\ project.length > 0 then
                     project
                 else
                     hosts.default_project ?? ""
-                fi;
+                fi
 
             if target.length == 0 then
                 return "no project specified and no default project configured";
@@ -373,9 +373,9 @@ namespace Analyser is
         si
 
         run_heap_check(hosts: PROJECT_HOSTS, arguments: JsonElement) -> string static is
-            let project = hosts.resolve(WIRE.try_get_string(arguments, "project"));
+            let project = hosts.resolve(WIRE.try_get_string(arguments, "project"))
 
-            let info = HOST_CLIENT.heap_check_state(project, hosts.idle_timeout_seconds);
+            let info = HOST_CLIENT.heap_check_state(project, hosts.idle_timeout_seconds)
 
             if !info.running then
                 return "no analyser running for {project} - nothing to check";
@@ -395,21 +395,21 @@ namespace Analyser is
         // by-code and top-files breakdown, and every error in full. Any
         // filter, or a small enough result, switches to the full per-line
         // list. Callers narrow with file / severity / code / exclude_codes.
-        SUMMARY_THRESHOLD: int static => 40;
-        DETAIL_LIMIT: int static => 200;
-        TOP_FILES: int static => 12;
+        SUMMARY_THRESHOLD: int static => 40
+        DETAIL_LIMIT: int static => 200
+        TOP_FILES: int static => 12
 
         run_diagnostics(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
-            let hints_for = WIRE.try_get_string_array(arguments, "hints_for");
-            let response = session.compile_diagnostics(hints_for);
+            let hints_for = WIRE.try_get_string_array(arguments, "hints_for")
+            let response = session.compile_diagnostics(hints_for)
 
-            let file_filter = WIRE.try_get_string(arguments, "file");
-            let code_filter = WIRE.try_get_string(arguments, "code");
-            let severity_filter = WIRE.try_get_string(arguments, "severity");
-            let excluded = _lowercased_set(WIRE.try_get_string_array(arguments, "exclude_codes"));
-            let min_severity = _severity_floor(severity_filter);
+            let file_filter = WIRE.try_get_string(arguments, "file")
+            let code_filter = WIRE.try_get_string(arguments, "code")
+            let severity_filter = WIRE.try_get_string(arguments, "severity")
+            let excluded = _lowercased_set(WIRE.try_get_string_array(arguments, "exclude_codes"))
+            let min_severity = _severity_floor(severity_filter)
 
-            let matched = Collections.LIST[DIAGNOSTIC]();
+            let matched = Collections.LIST[DIAGNOSTIC]()
 
             for diagnostic in response.diagnostics do
                 if !diagnostic.is_internal /\ _passes_filters(diagnostic, file_filter, code_filter, min_severity, excluded) then
@@ -422,7 +422,7 @@ namespace Analyser is
             fi
 
             let filters_present =
-                _has_filter(file_filter) \/ _has_filter(code_filter) \/ _has_filter(severity_filter) \/ excluded.count > 0;
+                _has_filter(file_filter) \/ _has_filter(code_filter) \/ _has_filter(severity_filter) \/ excluded.count > 0
 
             if !filters_present /\ matched.count > SUMMARY_THRESHOLD then
                 return _render_summary(matched);
@@ -448,7 +448,7 @@ namespace Analyser is
                 fi
             fi
 
-            let code = _code_key(diagnostic).to_lower_invariant();
+            let code = _code_key(diagnostic).to_lower_invariant()
 
             if let wanted: string = code_filter then
                 if wanted.length > 0 /\ code !~ wanted.to_lower_invariant() then
@@ -464,25 +464,25 @@ namespace Analyser is
         si
 
         _render_summary(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append(_header_line(matched));
-            result.append("\n\n");
+            result.append(_header_line(matched))
+            result.append("\n\n")
 
-            result.append("by code:\n");
+            result.append("by code:\n")
 
             for entry in _counted_desc(matched, d => _code_key(d)) do
                 result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
             od
 
-            result.append("\ntop files:\n");
+            result.append("\ntop files:\n")
 
-            let files = _counted_desc(matched, d => d.path);
-            let shown mut = 0;
+            let files = _counted_desc(matched, d => d.path)
+            let shown mut = 0
 
             for entry in files do
                 if shown < TOP_FILES then
-                    result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
+                    result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n")
                     shown = shown + 1;
                 fi
             od
@@ -491,31 +491,31 @@ namespace Analyser is
                 result.append("  ... and {files.count - TOP_FILES} more files\n");
             fi
 
-            let errors = _errors_of(matched);
+            let errors = _errors_of(matched)
 
             if errors.count > 0 then
-                result.append("\nerrors:\n");
+                result.append("\nerrors:\n")
 
                 for diagnostic in errors do
                     result.append("  {render_diagnostic(diagnostic)}\n");
                 od
             fi
 
-            result.append("\nSummary only - filter with file=, severity=, code=, or exclude_codes=[...] to see individual warnings.\n");
-            result.append(_inlay_pointer(matched));
+            result.append("\nSummary only - filter with file=, severity=, code=, or exclude_codes=[...] to see individual warnings.\n")
+            result.append(_inlay_pointer(matched))
 
             return result.to_string();
         si
 
         _render_detail(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
-            let sorted = Collections.LIST[DIAGNOSTIC](matched | .sort((a, b) => _compare_diagnostics(a, b)));
+            let sorted = Collections.LIST[DIAGNOSTIC](matched | .sort((a, b) => _compare_diagnostics(a, b)))
 
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append(_header_line(matched));
-            result.append("\n\n");
+            result.append(_header_line(matched))
+            result.append("\n\n")
 
-            let shown mut = 0;
+            let shown mut = 0
 
             for diagnostic in sorted do
                 if shown < DETAIL_LIMIT then
@@ -529,7 +529,7 @@ namespace Analyser is
                 result.append("... and {shown - DETAIL_LIMIT} more - narrow with file=, severity=, code=, or exclude_codes=[...]\n");
             fi
 
-            result.append(_inlay_pointer(matched));
+            result.append(_inlay_pointer(matched))
 
             return result.to_string();
         si
@@ -540,7 +540,7 @@ namespace Analyser is
         // check stays quiet.
         _inlay_pointer(matched: Collections.Iterable[DIAGNOSTIC]) -> string static is
             for diagnostic in matched do
-                let code = _code_key(diagnostic).to_lower_invariant();
+                let code = _code_key(diagnostic).to_lower_invariant()
 
                 if code =~ "redundant-unwrap" \/ code =~ "null-deref" then
                     return "For the narrowing / flow behind these, call inlays(file=...).\n";
@@ -554,14 +554,14 @@ namespace Analyser is
         // info / hint counts unless present (hints only appear when hints_for
         // opts a file in).
         _header_line(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
-            let errors mut = 0;
-            let warnings mut = 0;
-            let infos mut = 0;
-            let hints mut = 0;
-            let files = Collections.SET[string]();
+            let errors mut = 0
+            let warnings mut = 0
+            let infos mut = 0
+            let hints mut = 0
+            let files = Collections.SET[string]()
 
             for diagnostic in matched do
-                files.add(diagnostic.path);
+                files.add(diagnostic.path)
 
                 if diagnostic.severity <= 1 then
                     errors = errors + 1;
@@ -574,10 +574,10 @@ namespace Analyser is
                 fi
             od
 
-            let parts = Collections.LIST[string]();
+            let parts = Collections.LIST[string]()
 
-            parts.add(_plural(errors, "error"));
-            parts.add(_plural(warnings, "warning"));
+            parts.add(_plural(errors, "error"))
+            parts.add(_plural(warnings, "warning"))
 
             if infos > 0 then
                 parts.add(_plural(infos, "info"));
@@ -591,7 +591,7 @@ namespace Analyser is
         si
 
         _errors_of(matched: Collections.Iterable[DIAGNOSTIC]) -> Collections.LIST[DIAGNOSTIC] static is
-            let errors = Collections.LIST[DIAGNOSTIC]();
+            let errors = Collections.LIST[DIAGNOSTIC]()
 
             for diagnostic in matched do
                 if diagnostic.severity <= 1 then
@@ -605,10 +605,10 @@ namespace Analyser is
         // Count items by a key, returned high-to-low so the biggest
         // categories lead.
         _counted_desc[T](matched: Collections.Iterable[T], key_of: (T) -> string) -> Collections.LIST[COUNTED] static is
-            let counts = Collections.MAP[string, int]();
+            let counts = Collections.MAP[string, int]()
 
             for diagnostic in matched do
-                let key = key_of(diagnostic);
+                let key = key_of(diagnostic)
 
                 if counts.contains_key(key) then
                     counts[key] = counts[key] + 1;
@@ -617,7 +617,7 @@ namespace Analyser is
                 fi
             od
 
-            let pairs = Collections.LIST[COUNTED]();
+            let pairs = Collections.LIST[COUNTED]()
 
             for entry in counts do
                 pairs.add(COUNTED(entry.key, entry.value));
@@ -627,7 +627,7 @@ namespace Analyser is
         si
 
         _no_match_message(file_filter: string?, code_filter: string?, severity_filter: string?, excluded: Collections.SET[string]) -> string static is
-            let constraints = Collections.LIST[string]();
+            let constraints = Collections.LIST[string]()
 
             if _has_filter(file_filter) then
                 constraints.add("file={file_filter}");
@@ -653,17 +653,17 @@ namespace Analyser is
         si
 
         render_diagnostic(diagnostic: DIAGNOSTIC) -> string static is
-            let code = diagnostic.code;
+            let code = diagnostic.code
 
             let suffix =
                 if code? /\ code.length > 0 then
                     " [{code}]"
                 else
                     ""
-                fi;
+                fi
 
             let s mut =
-                "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}{suffix}";
+                "{diagnostic.path}:{diagnostic.start_line}:{diagnostic.start_column}: {severity_name(diagnostic.severity)}: {diagnostic.message}{suffix}"
 
             // Other locations the diagnostic points at - a prior
             // declaration, the call that invalidated a narrowing, or
@@ -672,7 +672,7 @@ namespace Analyser is
             // so only its message is rendered.
             if let related = diagnostic.related then
                 for r in related do
-                    let l = r.location;
+                    let l = r.location
 
                     if
                         l.file =~ diagnostic.path /\
@@ -690,7 +690,7 @@ namespace Analyser is
         si
 
         _code_key(diagnostic: DIAGNOSTIC) -> string static is
-            let code = diagnostic.code;
+            let code = diagnostic.code
 
             if code? /\ code.length > 0 then
                 return code;
@@ -715,10 +715,10 @@ namespace Analyser is
             return a.start_column - b.start_column;
         si
 
-        _has_filter(text: string?) -> bool static => text? /\ text.length > 0;
+        _has_filter(text: string?) -> bool static => text? /\ text.length > 0
 
         _lowercased_set(values: Collections.Iterable[string]) -> Collections.SET[string] static is
-            let set = Collections.SET[string]();
+            let set = Collections.SET[string]()
 
             for value in values do
                 if value.length > 0 then
@@ -738,7 +738,7 @@ namespace Analyser is
                 return 99;
             fi
 
-            let normalized = name.to_lower_invariant();
+            let normalized = name.to_lower_invariant()
 
             if normalized =~ "error" then
                 return 1;
@@ -758,18 +758,18 @@ namespace Analyser is
                 "{count} {word}"
             else
                 "{count} {word}s"
-            fi;
+            fi
 
         _join(parts: Collections.Iterable[string], separator: string) -> string static is
-            let result = StringBuilder();
-            let first mut = true;
+            let result = StringBuilder()
+            let first mut = true
 
             for part in parts do
                 if !first then
                     result.append(separator);
                 fi
 
-                result.append(part);
+                result.append(part)
                 first = false;
             od
 
@@ -777,15 +777,15 @@ namespace Analyser is
         si
 
         _pad_left(text: string, width: int) -> string static is
-            let result = StringBuilder();
-            let padding mut = width - text.length;
+            let result = StringBuilder()
+            let padding mut = width - text.length
 
             while padding > 0 do
-                result.append(' ');
+                result.append(' ')
                 padding = padding - 1;
             od
 
-            result.append(text);
+            result.append(text)
 
             return result.to_string();
         si
@@ -799,26 +799,26 @@ namespace Analyser is
                 "info"
             else
                 "hint"
-            fi;
+            fi
 
         run_inlays(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
-            let file = WIRE.try_get_string(arguments, "file");
+            let file = WIRE.try_get_string(arguments, "file")
 
             if !file? \/ file.length == 0 then
                 throw System.Exception("file argument is required");
             fi
 
-            let code_filter = WIRE.try_get_string(arguments, "code");
+            let code_filter = WIRE.try_get_string(arguments, "code")
             let wanted =
                 if let c: string = code_filter then
                     c.to_lower_invariant()
                 else
                     ""
-                fi;
+                fi
 
-            let response = session.inlay_hints(file);
+            let response = session.inlay_hints(file)
 
-            let matched = Collections.LIST[INLAY_HINT]();
+            let matched = Collections.LIST[INLAY_HINT]()
 
             for hint in response.hints do
                 if wanted.length == 0 \/ hint.code.to_lower_invariant() =~ wanted then
@@ -834,18 +834,18 @@ namespace Analyser is
                 return "no narrowing inlays in {file}";
             fi
 
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append("{_plural(matched.count, "inlay")} in {file}\n\n");
-            result.append("by code:\n");
+            result.append("{_plural(matched.count, "inlay")} in {file}\n\n")
+            result.append("by code:\n")
 
             for entry in _counted_desc(matched, h => h.code) do
                 result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
             od
 
-            result.append("\n");
+            result.append("\n")
 
-            let shown mut = 0;
+            let shown mut = 0
 
             for hint in matched do
                 if shown < DETAIL_LIMIT then
@@ -871,26 +871,26 @@ namespace Analyser is
                     hint.detail
                 else
                     hint.label
-                fi;
+                fi
 
             let suffix =
                 if hint.code.length > 0 then
                     " [{hint.code}]"
                 else
                     ""
-                fi;
+                fi
 
             return "{file}:{hint.line}:{hint.column}: {text}{suffix}";
         si
 
         run_hover(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
-            let position = read_position(arguments);
+            let position = read_position(arguments)
 
             return hover_at(session, position);
         si
 
         hover_at(session: ANALYSER_SESSION, position: POSITION) -> string static is
-            let response = session.hover(position.file, position.line, position.column);
+            let response = session.hover(position.file, position.line, position.column)
 
             if response.signature.length == 0 then
                 return "nothing at {position.file}:{position.line}:{position.column}";
@@ -904,7 +904,7 @@ namespace Analyser is
         si
 
         run_position_locations(session: ANALYSER_SESSION, arguments: JsonElement, which: string) -> string static is
-            let position = read_position(arguments);
+            let position = read_position(arguments)
 
             return locations_at(session, position, which);
         si
@@ -917,13 +917,13 @@ namespace Analyser is
                     session.references(position.file, position.line, position.column).locations
                 else
                     session.implementation(position.file, position.line, position.column).locations
-                fi;
+                fi
 
             if locations.count == 0 then
                 return "no {which} found for {position.file}:{position.line}:{position.column}";
             fi
 
-            let result = StringBuilder();
+            let result = StringBuilder()
 
             for location in locations do
                 result.append("{render_location(location)}\n");
@@ -933,22 +933,22 @@ namespace Analyser is
         si
 
         render_location(location: LOCATION_DTO) -> string static =>
-            "{location.file}:{location.start_line}:{location.start_column}-{location.end_line}:{location.end_column}";
+            "{location.file}:{location.start_line}:{location.start_column}-{location.end_line}:{location.end_column}"
 
-        MAX_SYMBOL_MATCHES: int static => 200;
+        MAX_SYMBOL_MATCHES: int static => 200
 
         run_symbols(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
-            let query = (WIRE.try_get_string(arguments, "query") ?? "").to_lower_invariant();
-            let response = session.symbols("");
+            let query = (WIRE.try_get_string(arguments, "query") ?? "").to_lower_invariant()
+            let response = session.symbols("")
 
-            let result = StringBuilder();
-            let count mut = 0;
+            let result = StringBuilder()
+            let count mut = 0
 
             for file in response.files do
                 for symbol in file.symbols do
                     if query.length == 0 \/ symbol.search_description.to_lower_invariant().contains(query) then
                         if count < MAX_SYMBOL_MATCHES then
-                            result.append(render_symbol_line(file.path, symbol));
+                            result.append(render_symbol_line(file.path, symbol))
                             result.append("\n");
                         fi
 
@@ -969,9 +969,9 @@ namespace Analyser is
         si
 
         render_symbol_line(file_path: string, symbol: SYMBOL_DTO) -> string static is
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append("{symbol.search_description} - {file_path}:{symbol.start_line}:{symbol.start_column}");
+            result.append("{symbol.search_description} - {file_path}:{symbol.start_line}:{symbol.start_column}")
 
             if symbol.qualifier.length > 0 then
                 result.append(" (in {symbol.qualifier})");
@@ -985,17 +985,17 @@ namespace Analyser is
         // query for the unique hit or return a candidate list so the caller
         // can pick one and re-query.
         run_by_name(session: ANALYSER_SESSION, arguments: JsonElement, which: string) -> string static is
-            let name = WIRE.try_get_string(arguments, "name");
+            let name = WIRE.try_get_string(arguments, "name")
 
             if !name? \/ name.length == 0 then
                 throw System.Exception("name argument is required");
             fi
 
-            let matches = resolve_name(session, name);
+            let matches = resolve_name(session, name)
 
             if matches.count == 0 then
                 if which =~ "hover" /\ is_bare_identifier(name) then
-                    let imported = try_resolve_imported_type(session, name);
+                    let imported = try_resolve_imported_type(session, name)
 
                     if imported.length > 0 then
                         return imported;
@@ -1007,7 +1007,7 @@ namespace Analyser is
 
             if matches.count > 1 then
                 if which =~ "implementations" then
-                    let collapsed = try_collapse_implementations(session, name, matches);
+                    let collapsed = try_collapse_implementations(session, name, matches)
 
                     if collapsed.length > 0 then
                         return collapsed;
@@ -1017,8 +1017,8 @@ namespace Analyser is
                 return render_candidates(name, matches);
             fi
 
-            let match = matches[0];
-            let position = locate_identifier(session, match, name);
+            let match = matches[0]
+            let position = locate_identifier(session, match, name)
 
             if which =~ "hover" then
                 return hover_at(session, position);
@@ -1038,18 +1038,18 @@ namespace Analyser is
         // dedupe). Empty union means no candidate was a base, so the
         // caller falls back to the ordinary candidate list.
         try_collapse_implementations(session: ANALYSER_SESSION, name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
-            let ordered = LIST[LOCATION_DTO]();
-            let seen = Collections.SET[string]();
+            let ordered = LIST[LOCATION_DTO]()
+            let seen = Collections.SET[string]()
 
             for match in matches do
-                let position = locate_identifier(session, match, name);
-                let response = session.implementation(position.file, position.line, position.column);
+                let position = locate_identifier(session, match, name)
+                let response = session.implementation(position.file, position.line, position.column)
 
                 for location in response.locations do
-                    let key = "{location.file}:{location.start_line}:{location.start_column}";
+                    let key = "{location.file}:{location.start_line}:{location.start_column}"
 
                     if !seen.contains(key) then
-                        seen.add(key);
+                        seen.add(key)
                         ordered.add(location);
                     fi
                 od
@@ -1059,7 +1059,7 @@ namespace Analyser is
                 return "";
             fi
 
-            let result = StringBuilder();
+            let result = StringBuilder()
 
             for location in ordered do
                 result.append("{render_location(location)}\n");
@@ -1075,11 +1075,11 @@ namespace Analyser is
         // resolves, render a hover-style summary so the caller sees the
         // qualified name and can chain a `members` call cleanly.
         try_resolve_imported_type(session: ANALYSER_SESSION, name: string) -> string static is
-            let candidates = LIST[Analysis.Protocol.Response.DESCRIBE_TYPE]();
+            let candidates = LIST[Analysis.Protocol.Response.DESCRIBE_TYPE]()
 
             for ns in COMMON_NAMESPACES do
-                let qualified = "{ns}.{name}";
-                let response = session.describe_type(qualified);
+                let qualified = "{ns}.{name}"
+                let response = session.describe_type(qualified)
 
                 if response.resolved_name.length > 0 then
                     candidates.add(response);
@@ -1091,8 +1091,8 @@ namespace Analyser is
             fi
 
             if candidates.count > 1 then
-                let disambig = StringBuilder();
-                disambig.append("{candidates.count} imported types share the short name {name}. Try one:\n");
+                let disambig = StringBuilder()
+                disambig.append("{candidates.count} imported types share the short name {name}. Try one:\n")
 
                 for candidate in candidates do
                     disambig.append("  {candidate.resolved_name} ({candidate.type_kind})\n");
@@ -1101,7 +1101,7 @@ namespace Analyser is
                 return disambig.to_string();
             fi
 
-            let only = candidates[0];
+            let only = candidates[0]
             return "{only.type_kind} {only.resolved_name} (imported)";
         si
 
@@ -1126,17 +1126,17 @@ namespace Analyser is
             "Collections",
             "IO",
             "Tasks"
-        ];
+        ]
 
         // A symbol match paired with the file it lives in.
         resolve_name(session: ANALYSER_SESSION, name: string) -> LIST[SYMBOL_MATCH] static is
-            let target = name.to_lower_invariant();
-            let response = session.symbols("");
-            let matches = LIST[SYMBOL_MATCH]();
+            let target = name.to_lower_invariant()
+            let response = session.symbols("")
+            let matches = LIST[SYMBOL_MATCH]()
 
             for file in response.files do
                 for symbol in file.symbols do
-                    let leading = extract_leading_identifier(symbol.search_description).to_lower_invariant();
+                    let leading = extract_leading_identifier(symbol.search_description).to_lower_invariant()
 
                     if leading =~ target then
                         matches.add(SYMBOL_MATCH(file.path, symbol));
@@ -1160,22 +1160,22 @@ namespace Analyser is
                 return POSITION(match.file, match.symbol.name_line, match.symbol.name_column);
             fi
 
-            let default_position = POSITION(match.file, match.symbol.start_line, match.symbol.start_column);
-            let full_path = Path.combine(session.project_directory, match.file);
+            let default_position = POSITION(match.file, match.symbol.start_line, match.symbol.start_column)
+            let full_path = Path.combine(session.project_directory, match.file)
 
             if !File.exists(full_path) then
                 return default_position;
             fi
 
             try
-                let lines = File.read_all_lines(full_path);
+                let lines = File.read_all_lines(full_path)
 
                 if match.symbol.start_line < 1 \/ match.symbol.start_line > lines.count then
                     return default_position;
                 fi
 
-                let line_text = lines[match.symbol.start_line - 1];
-                let index = line_text.to_lower_invariant().index_of(name.to_lower_invariant());
+                let line_text = lines[match.symbol.start_line - 1]
+                let index = line_text.to_lower_invariant().index_of(name.to_lower_invariant())
 
                 if index >= 0 then
                     return POSITION(match.file, match.symbol.start_line, index + 1);
@@ -1191,7 +1191,7 @@ namespace Analyser is
         // character. A method's description starts with its name, then `(`;
         // a type's description is just its name.
         extract_leading_identifier(description: string) -> string static is
-            let end mut = 0;
+            let end mut = 0
 
             for c in description do
                 if !((c >= 'a' /\ c <= 'z') \/ (c >= 'A' /\ c <= 'Z') \/ (c >= '0' /\ c <= '9') \/ c == '_') then
@@ -1205,34 +1205,34 @@ namespace Analyser is
         si
 
         render_candidates(name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append("{matches.count} symbols share the name {name} - call the position-based tool (`hover`, `references`, ...) at one of these locations:\n");
+            result.append("{matches.count} symbols share the name {name} - call the position-based tool (`hover`, `references`, ...) at one of these locations:\n")
 
             for match in matches do
-                result.append(render_symbol_line(match.file, match.symbol));
+                result.append(render_symbol_line(match.file, match.symbol))
                 result.append("\n");
             od
 
             return result.to_string();
         si
 
-        MAX_MEMBERS: int static => 200;
+        MAX_MEMBERS: int static => 200
 
         run_members(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
-            let type_expression = WIRE.try_get_string(arguments, "type");
+            let type_expression = WIRE.try_get_string(arguments, "type")
 
             if !type_expression? \/ type_expression.length == 0 then
                 throw System.Exception("type argument is required");
             fi
 
-            let response mut = session.describe_type(type_expression);
+            let response mut = session.describe_type(type_expression)
 
             if response.resolved_name.length == 0 /\ is_bare_identifier(type_expression) then
-                let type_matches = resolve_type_name(session, type_expression);
+                let type_matches = resolve_type_name(session, type_expression)
 
                 if type_matches.count == 1 then
-                    let qualified = qualified_name_of(type_matches[0]);
+                    let qualified = qualified_name_of(type_matches[0])
 
                     if qualified.length > 0 /\ qualified !~ type_expression then
                         response = session.describe_type(qualified);
@@ -1246,12 +1246,12 @@ namespace Analyser is
                 return "no type named {type_expression} - fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`";
             fi
 
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append("{response.type_kind} {response.resolved_name}\n");
+            result.append("{response.type_kind} {response.resolved_name}\n")
 
             if response.ancestors.count > 0 then
-                result.append("ancestors:\n");
+                result.append("ancestors:\n")
 
                 for ancestor in response.ancestors do
                     result.append("  {ancestor}\n");
@@ -1259,13 +1259,13 @@ namespace Analyser is
             fi
 
             if response.members.count == 0 then
-                result.append("no members\n");
+                result.append("no members\n")
                 return result.to_string();
             fi
 
-            result.append("members:\n");
+            result.append("members:\n")
 
-            let count mut = 0;
+            let count mut = 0
 
             for member in response.members do
                 if count < MAX_MEMBERS then
@@ -1296,7 +1296,7 @@ namespace Analyser is
                     "{member.description} // {kind_label}"
                 else
                     member.description
-                fi;
+                fi
 
             if member.is_inherited /\ member.inherited_from.length > 0 then
                 return "{head} [from {member.inherited_from}]";
@@ -1329,8 +1329,8 @@ namespace Analyser is
         // out variables, methods and other non-type kinds so the members
         // fallback only tries describe_type on plausibly resolvable names.
         resolve_type_name(session: ANALYSER_SESSION, name: string) -> LIST[SYMBOL_MATCH] static is
-            let all_matches = resolve_name(session, name);
-            let type_matches = LIST[SYMBOL_MATCH]();
+            let all_matches = resolve_name(session, name)
+            let type_matches = LIST[SYMBOL_MATCH]()
 
             for match in all_matches do
                 if is_type_kind(match.symbol.kind) then
@@ -1346,13 +1346,13 @@ namespace Analyser is
         // this list narrow so the fallback only re-queries names it has
         // a reasonable chance of resolving.
         is_type_kind(kind: int) -> bool static =>
-            kind == 5 \/ kind == 10 \/ kind == 11 \/ kind == 23;
+            kind == 5 \/ kind == 10 \/ kind == 11 \/ kind == 23
 
         // Build the fully-qualified name of a matched type symbol:
         // `<qualifier>.<leading identifier>`. Returns the leading
         // identifier alone when the symbol has no qualifier (top-level).
         qualified_name_of(match: SYMBOL_MATCH) -> string static is
-            let leading = extract_leading_identifier(match.symbol.search_description);
+            let leading = extract_leading_identifier(match.symbol.search_description)
 
             if match.symbol.qualifier.length > 0 then
                 return "{match.symbol.qualifier}.{leading}";
@@ -1365,9 +1365,9 @@ namespace Analyser is
         // (e.g. `Foo` in two namespaces). Render the candidate list so the
         // caller can re-invoke `members` with the exact qualified name.
         render_type_candidates(name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
-            let result = StringBuilder();
+            let result = StringBuilder()
 
-            result.append("{matches.count} types share the name {name}. Re-invoke `members` with one of:\n");
+            result.append("{matches.count} types share the name {name}. Re-invoke `members` with one of:\n")
 
             for match in matches do
                 result.append("  {qualified_name_of(match)} - {match.file}:{match.symbol.start_line}\n");
@@ -1377,14 +1377,14 @@ namespace Analyser is
         si
 
         read_position(arguments: JsonElement) -> POSITION static is
-            let file = WIRE.try_get_string(arguments, "file");
+            let file = WIRE.try_get_string(arguments, "file")
 
             if !file? then
                 throw System.Exception("file argument is required");
             fi
 
-            let line = WIRE.try_get_int(arguments, "line");
-            let column = WIRE.try_get_int(arguments, "column");
+            let line = WIRE.try_get_int(arguments, "line")
+            let column = WIRE.try_get_int(arguments, "column")
 
             if line < 1 \/ column < 1 then
                 throw System.Exception("line and column arguments are required and 1-based");
@@ -1395,23 +1395,23 @@ namespace Analyser is
     si
 
     class POSITION is
-        file: string public;
-        line: int public;
-        column: int public;
+        file: string public
+        line: int public
+        column: int public
 
         init(file: string, line: int, column: int) is
-            self.file = file;
-            self.line = line;
+            self.file = file
+            self.line = line
             self.column = column;
         si
     si
 
     class SYMBOL_MATCH is
-        file: string public;
-        symbol: SYMBOL_DTO public;
+        file: string public
+        symbol: SYMBOL_DTO public
 
         init(file: string, symbol: SYMBOL_DTO) is
-            self.file = file;
+            self.file = file
             self.symbol = symbol;
         si
     si
@@ -1419,11 +1419,11 @@ namespace Analyser is
     // A group key paired with how many diagnostics fell under it, for the
     // by-code / top-files breakdowns in the diagnostics summary.
     class COUNTED is
-        key: string public;
-        count: int public;
+        key: string public
+        count: int public
 
         init(key: string, count: int) is
-            self.key = key;
+            self.key = key
             self.count = count;
         si
     si
@@ -1431,10 +1431,10 @@ namespace Analyser is
     // session-level handler, so the MCP proxy and the pool host build from
     // the same source of truth.
     class TOOL_ENTRY is
-        name: string public;
-        description: string public;
-        input_schema: string public;
-        run: (ANALYSER_SESSION, JsonElement) -> string public;
+        name: string public
+        description: string public
+        input_schema: string public
+        run: (ANALYSER_SESSION, JsonElement) -> string public
 
         init(
             name: string,
@@ -1442,9 +1442,9 @@ namespace Analyser is
             input_schema: string,
             run: (ANALYSER_SESSION, JsonElement) -> string
         ) is
-            self.name = name;
-            self.description = description;
-            self.input_schema = input_schema;
+            self.name = name
+            self.description = description
+            self.input_schema = input_schema
             self.run = run;
         si
     si

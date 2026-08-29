@@ -33,5 +33,10 @@
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
     <None Include="LICENSE*" Pack="true" PackagePath="\" />
+
+    <!-- Terminator-free sources; error on CI so stray `;` cannot creep
+         back in, warning locally. -->
+    <GhulOptions Include="--warn redundant-semicolon" />
+    <GhulOptions Include="--warn-as-error redundant-semicolon" Condition="'$(CI)' != ''" />
   </ItemGroup>
 </Project>

@@ -1,25 +1,25 @@
 namespace MCP is
-    use System.Text.Json.JsonElement;
-    use Collections.LIST;
+    use System.Text.Json.JsonElement
+    use Collections.LIST
 
     class SERVER is
-        PROTOCOL_VERSION: string static => "2025-06-18";
+        PROTOCOL_VERSION: string static => "2025-06-18"
 
-        _reader: IO.TextReader;
-        _writer: IO.TextWriter;
-        _tools: LIST[TOOL];
-        _query_log: QUERY_LOG;
+        _reader: IO.TextReader
+        _writer: IO.TextWriter
+        _tools: LIST[TOOL]
+        _query_log: QUERY_LOG
 
-        name: string;
-        version: string;
+        name: string
+        version: string
 
         init(reader: IO.TextReader, writer: IO.TextWriter, name: string, version: string, query_log: QUERY_LOG) is
-            _reader = reader;
-            _writer = writer;
-            _tools = LIST[TOOL]();
-            _query_log = query_log;
+            _reader = reader
+            _writer = writer
+            _tools = LIST[TOOL]()
+            _query_log = query_log
 
-            self.name = name;
+            self.name = name
             self.version = version;
         si
 
@@ -30,12 +30,12 @@ namespace MCP is
         // Serve until end of input.
         run() is
             do
-                let request: REQUEST? mut = null;
+                let request: REQUEST? mut = null
 
                 try
                     request = WIRE.read_request(_reader);
                 catch ex: System.Text.Json.JsonException
-                    WIRE.write(_writer, ERROR_RESPONSE(WIRE.null_id, -32700, "parse error: {ex.message}"));
+                    WIRE.write(_writer, ERROR_RESPONSE(WIRE.null_id, -32700, "parse error: {ex.message}"))
                     continue;
                 yrt
 
@@ -54,7 +54,7 @@ namespace MCP is
         // below is deliberate, not redundant.
         @suppress("presence-test-non-optional")
         handle(request: REQUEST) is
-            let method = request.method;
+            let method = request.method
 
             if !method? then
                 reply_error(request, -32600, "invalid request: no method");
@@ -74,35 +74,35 @@ namespace MCP is
         si
 
         handle_tool_call(request: REQUEST) is
-            let stopwatch = System.Diagnostics.Stopwatch.start_new();
+            let stopwatch = System.Diagnostics.Stopwatch.start_new()
 
-            let name = WIRE.try_get_string(request.params, "name");
-            let arguments = WIRE.try_get_element(request.params, "arguments");
+            let name = WIRE.try_get_string(request.params, "name")
+            let arguments = WIRE.try_get_element(request.params, "arguments")
 
             if !name? then
-                _query_log.log_call("(unnamed)", arguments, "invalid-request", stopwatch.elapsed_milliseconds, "tools/call requires a tool name");
-                reply_error(request, -32602, "tools/call requires a tool name");
+                _query_log.log_call("(unnamed)", arguments, "invalid-request", stopwatch.elapsed_milliseconds, "tools/call requires a tool name")
+                reply_error(request, -32602, "tools/call requires a tool name")
                 return;
             fi
 
-            let tool_name = name;
-            let tool = find_tool(tool_name);
+            let tool_name = name
+            let tool = find_tool(tool_name)
 
             if !tool? then
-                _query_log.log_call(tool_name, arguments, "unknown-tool", stopwatch.elapsed_milliseconds, "unknown tool: {tool_name}");
-                reply_error(request, -32602, "unknown tool: {tool_name}");
+                _query_log.log_call(tool_name, arguments, "unknown-tool", stopwatch.elapsed_milliseconds, "unknown tool: {tool_name}")
+                reply_error(request, -32602, "unknown tool: {tool_name}")
                 return;
             fi
 
             try
-                let result = tool.call(arguments);
+                let result = tool.call(arguments)
 
-                _query_log.log_call(tool_name, arguments, "ok", stopwatch.elapsed_milliseconds, result);
+                _query_log.log_call(tool_name, arguments, "ok", stopwatch.elapsed_milliseconds, result)
                 reply(request, CALL_RESULT(result, false));
             catch ex: System.Exception
                 // Tool failures are results, not protocol errors, so the
                 // model calling the tool sees the message.
-                _query_log.log_call(tool_name, arguments, "error", stopwatch.elapsed_milliseconds, "{ex.get_type().name}: {ex.message}");
+                _query_log.log_call(tool_name, arguments, "error", stopwatch.elapsed_milliseconds, "{ex.get_type().name}: {ex.message}")
                 reply(request, CALL_RESULT("{tool_name} failed: {ex.message}", true));
             yrt
         si
@@ -135,19 +135,19 @@ namespace MCP is
     si
 
     class INITIALIZE_RESULT is
-        protocol_version: string public;
-        capabilities: CAPABILITIES public;
-        server_info: SERVER_INFO public;
+        protocol_version: string public
+        capabilities: CAPABILITIES public
+        server_info: SERVER_INFO public
 
         init(protocol_version: string, server_info: SERVER_INFO) is
-            self.protocol_version = protocol_version;
-            capabilities = CAPABILITIES();
+            self.protocol_version = protocol_version
+            capabilities = CAPABILITIES()
             self.server_info = server_info;
         si
     si
 
     class CAPABILITIES is
-        tools: EMPTY public;
+        tools: EMPTY public
 
         init() is
             tools = EMPTY();
@@ -155,11 +155,11 @@ namespace MCP is
     si
 
     class SERVER_INFO is
-        name: string public;
-        version: string public;
+        name: string public
+        version: string public
 
         init(name: string, version: string) is
-            self.name = name;
+            self.name = name
             self.version = version;
         si
     si
@@ -169,7 +169,7 @@ namespace MCP is
     si
 
     class TOOLS_LIST_RESULT is
-        tools: LIST[TOOL] public;
+        tools: LIST[TOOL] public
 
         init(tools: LIST[TOOL]) is
             self.tools = tools;
@@ -177,21 +177,21 @@ namespace MCP is
     si
 
     class CALL_RESULT is
-        content: CONTENT_ITEM[] public;
-        is_error: bool public;
+        content: CONTENT_ITEM[] public
+        is_error: bool public
 
         init(text: string, is_error: bool) is
-            content = [CONTENT_ITEM(text)];
+            content = [CONTENT_ITEM(text)]
             self.is_error = is_error;
         si
     si
 
     class CONTENT_ITEM is
-        type: string public;
-        text: string public;
+        type: string public
+        text: string public
 
         init(text: string) is
-            type = "text";
+            type = "text"
             self.text = text;
         si
     si

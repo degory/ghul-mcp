@@ -1,12 +1,12 @@
 namespace MCP is
-    use System.Text.Json.JsonElement;
-    use System.Text.Json.JsonSerializer;
-    use System.Text.Json.JsonValueKind;
+    use System.Text.Json.JsonElement
+    use System.Text.Json.JsonSerializer
+    use System.Text.Json.JsonValueKind
 
-    use IO.Directory;
-    use IO.File;
-    use IO.Path;
-    use IO.Std;
+    use IO.Directory
+    use IO.File
+    use IO.Path
+    use IO.Std
 
     // Append-only JSONL record of every tools/call dispatch: what was asked,
     // whether it succeeded, how long it took, and the head of the result
@@ -18,26 +18,26 @@ namespace MCP is
     // Logging must never break the server: any filesystem failure disables
     // the log for the rest of the run, reported once on stderr.
     class QUERY_LOG is
-        _path: string?;
-        _pid: int;
+        _path: string?
+        _pid: int
 
         // At startup an existing log past this size is renamed to
         // `<path>.prev` (replacing any earlier rotation) so the log never
         // grows without bound.
-        MAX_BYTES_BEFORE_ROTATE: long static => 10000000L;
+        MAX_BYTES_BEFORE_ROTATE: long static => 10000000L
 
         // Result text is truncated to this many characters in the log -
         // enough to capture miss messages and the shape of an answer
         // without recording whole diagnostics dumps.
-        HEAD_LENGTH: int static => 300;
+        HEAD_LENGTH: int static => 300
 
         init(path: string?) is
-            _path = path;
-            _pid = System.Environment.process_id;
+            _path = path
+            _pid = System.Environment.process_id
 
             if let p: string = path then
                 try
-                    let directory = Path.get_directory_name(p);
+                    let directory = Path.get_directory_name(p)
 
                     if directory? /\ directory.length > 0 then
                         Directory.create_directory(directory);
@@ -52,7 +52,7 @@ namespace MCP is
             fi
         si
 
-        path: string? => _path;
+        path: string? => _path
 
         log_start(server: string, version: string, default_project: string?) is
             _append(START_ENTRY(_now(), _pid, server, version, default_project ?? ""));
@@ -102,7 +102,7 @@ namespace MCP is
         si
 
         _disable(reason: string) is
-            Std.error.write_line("ghul-mcp: query log disabled: {reason}");
+            Std.error.write_line("ghul-mcp: query log disabled: {reason}")
             _path = null;
         si
 
@@ -131,33 +131,33 @@ namespace MCP is
     si
 
     class START_ENTRY is
-        at: string public;
-        event: string public;
-        pid: int public;
-        server: string public;
-        version: string public;
-        default_project: string public;
+        at: string public
+        event: string public
+        pid: int public
+        server: string public
+        version: string public
+        default_project: string public
 
         init(at: string, pid: int, server: string, version: string, default_project: string) is
-            self.at = at;
-            event = "start";
-            self.pid = pid;
-            self.server = server;
-            self.version = version;
+            self.at = at
+            event = "start"
+            self.pid = pid
+            self.server = server
+            self.version = version
             self.default_project = default_project;
         si
     si
 
     class CALL_ENTRY is
-        at: string public;
-        event: string public;
-        pid: int public;
-        tool: string public;
-        arguments: string public;
-        status: string public;
-        elapsed_ms: long public;
-        result_chars: int public;
-        result: string public;
+        at: string public
+        event: string public
+        pid: int public
+        tool: string public
+        arguments: string public
+        status: string public
+        elapsed_ms: long public
+        result_chars: int public
+        result: string public
 
         init(
             at: string,
@@ -169,14 +169,14 @@ namespace MCP is
             result_chars: int,
             result: string
         ) is
-            self.at = at;
-            event = "call";
-            self.pid = pid;
-            self.tool = tool;
-            self.arguments = arguments;
-            self.status = status;
-            self.elapsed_ms = elapsed_ms;
-            self.result_chars = result_chars;
+            self.at = at
+            event = "call"
+            self.pid = pid
+            self.tool = tool
+            self.arguments = arguments
+            self.status = status
+            self.elapsed_ms = elapsed_ms
+            self.result_chars = result_chars
             self.result = result;
         si
     si

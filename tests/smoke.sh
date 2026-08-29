@@ -259,17 +259,17 @@ mkdir -p "$hints_dir/src"
 cat > "$hints_dir/src/test.ghul" <<'EOF'
 class WIDGET is
     init() is si
-    make() -> WIDGET? => WIDGET();
+    make() -> WIDGET? => WIDGET()
     run() is
-        let w mut = make();
+        let w mut = make()
         if w? then
-            w = make();
+            w = make()
         fi
     si
 si
 
 entry() is
-    WIDGET().run();
+    WIDGET().run()
 si
 EOF
 cp ghul-mcp.ghulproj "$hints_dir/hints-test.ghulproj"
