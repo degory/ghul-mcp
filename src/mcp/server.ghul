@@ -20,11 +20,11 @@ namespace MCP is
             _query_log = query_log
 
             self.name = name
-            self.version = version;
+            self.version = version
         si
 
         add_tool(tool: TOOL) is
-            _tools.add(tool);
+            _tools.add(tool)
         si
 
         // Serve until end of input.
@@ -33,17 +33,17 @@ namespace MCP is
                 let request: REQUEST? mut = null
 
                 try
-                    request = WIRE.read_request(_reader);
+                    request = WIRE.read_request(_reader)
                 catch ex: System.Text.Json.JsonException
                     WIRE.write(_writer, ERROR_RESPONSE(WIRE.null_id, -32700, "parse error: {ex.message}"))
-                    continue;
+                    continue
                 yrt
 
                 if !request? then
-                    break;
+                    break
                 fi
 
-                handle(request);
+                handle(request)
             od
         si
 
@@ -57,19 +57,19 @@ namespace MCP is
             let method = request.method
 
             if !method? then
-                reply_error(request, -32600, "invalid request: no method");
+                reply_error(request, -32600, "invalid request: no method")
             elif method =~ "initialize" then
-                reply(request, INITIALIZE_RESULT(PROTOCOL_VERSION, SERVER_INFO(name, version)));
+                reply(request, INITIALIZE_RESULT(PROTOCOL_VERSION, SERVER_INFO(name, version)))
             elif method =~ "ping" then
-                reply(request, EMPTY());
+                reply(request, EMPTY())
             elif method =~ "tools/list" then
-                reply(request, TOOLS_LIST_RESULT(_tools));
+                reply(request, TOOLS_LIST_RESULT(_tools))
             elif method =~ "tools/call" then
-                handle_tool_call(request);
+                handle_tool_call(request)
             elif request.is_notification then
                 // notifications we don't act on, e.g. notifications/initialized
             else
-                reply_error(request, -32601, "method not found: {method}");
+                reply_error(request, -32601, "method not found: {method}")
             fi
         si
 
@@ -82,7 +82,7 @@ namespace MCP is
             if !name? then
                 _query_log.log_call("(unnamed)", arguments, "invalid-request", stopwatch.elapsed_milliseconds, "tools/call requires a tool name")
                 reply_error(request, -32602, "tools/call requires a tool name")
-                return;
+                return
             fi
 
             let tool_name = name
@@ -91,46 +91,46 @@ namespace MCP is
             if !tool? then
                 _query_log.log_call(tool_name, arguments, "unknown-tool", stopwatch.elapsed_milliseconds, "unknown tool: {tool_name}")
                 reply_error(request, -32602, "unknown tool: {tool_name}")
-                return;
+                return
             fi
 
             try
                 let result = tool.call(arguments)
 
                 _query_log.log_call(tool_name, arguments, "ok", stopwatch.elapsed_milliseconds, result)
-                reply(request, CALL_RESULT(result, false));
+                reply(request, CALL_RESULT(result, false))
             catch ex: System.Exception
                 // Tool failures are results, not protocol errors, so the
                 // model calling the tool sees the message.
                 _query_log.log_call(tool_name, arguments, "error", stopwatch.elapsed_milliseconds, "{ex.get_type().name}: {ex.message}")
-                reply(request, CALL_RESULT("{tool_name} failed: {ex.message}", true));
+                reply(request, CALL_RESULT("{tool_name} failed: {ex.message}", true))
             yrt
         si
 
         find_tool(name: string) -> TOOL? is
             for tool in _tools do
                 if tool.name =~ name then
-                    return tool;
+                    return tool
                 fi
             od
 
-            return null;
+            return null
         si
 
         reply(request: REQUEST, result: object) is
             if request.is_notification then
-                return;
+                return
             fi
 
-            WIRE.write(_writer, RESPONSE(request.id, result));
+            WIRE.write(_writer, RESPONSE(request.id, result))
         si
 
         reply_error(request: REQUEST, code: int, message: string) is
             if request.is_notification then
-                return;
+                return
             fi
 
-            WIRE.write(_writer, ERROR_RESPONSE(request.id, code, message));
+            WIRE.write(_writer, ERROR_RESPONSE(request.id, code, message))
         si
     si
 
@@ -142,7 +142,7 @@ namespace MCP is
         init(protocol_version: string, server_info: SERVER_INFO) is
             self.protocol_version = protocol_version
             capabilities = CAPABILITIES()
-            self.server_info = server_info;
+            self.server_info = server_info
         si
     si
 
@@ -150,7 +150,7 @@ namespace MCP is
         tools: EMPTY public
 
         init() is
-            tools = EMPTY();
+            tools = EMPTY()
         si
     si
 
@@ -160,7 +160,7 @@ namespace MCP is
 
         init(name: string, version: string) is
             self.name = name
-            self.version = version;
+            self.version = version
         si
     si
 
@@ -172,7 +172,7 @@ namespace MCP is
         tools: LIST[TOOL] public
 
         init(tools: LIST[TOOL]) is
-            self.tools = tools;
+            self.tools = tools
         si
     si
 
@@ -182,7 +182,7 @@ namespace MCP is
 
         init(text: string, is_error: bool) is
             content = [CONTENT_ITEM(text)]
-            self.is_error = is_error;
+            self.is_error = is_error
         si
     si
 
@@ -192,7 +192,7 @@ namespace MCP is
 
         init(text: string) is
             type = "text"
-            self.text = text;
+            self.text = text
         si
     si
 si

@@ -106,7 +106,7 @@ namespace Analyser is
                     "ghul.compiler version unknown"
                 fi
 
-            return "[{session.project_directory} · {compiler_text}]\n{result}";
+            return "[{session.project_directory} · {compiler_text}]\n{result}"
         si
 
         // The shared tool table: name, description, input schema, and the
@@ -227,7 +227,7 @@ namespace Analyser is
                 )
             )
 
-            return result;
+            return result
         si
 
         // The MCP tools, each a thin proxy routing its call to the project's
@@ -247,10 +247,10 @@ namespace Analyser is
                         entry.input_schema,
                         arguments => route(name, arguments)
                     )
-                );
+                )
             od
 
-            return result;
+            return result
         si
 
         // The host-side dispatch table: tool name to session-level handler.
@@ -258,10 +258,10 @@ namespace Analyser is
             let result = MAP[string, (ANALYSER_SESSION, JsonElement) -> string]()
 
             for entry in table() do
-                result[entry.name] = entry.run;
+                result[entry.name] = entry.run
             od
 
-            return result;
+            return result
         si
 
         // The lifecycle tools the MCP front end keeps for itself: the pool
@@ -302,7 +302,7 @@ namespace Analyser is
                     "{{\"type\": \"object\", \"properties\": {{{PROJECT_PROPERTY}}}}}",
                     arguments => run_heap_check(hosts, arguments)
                 )
-            );
+            )
         si
 
         run_sessions(hosts: PROJECT_HOSTS) -> string static is
@@ -330,7 +330,7 @@ namespace Analyser is
                         fi
 
                     result.append("{project} ({pid_text}, {compiler_text}, {info.source_count} sources)\n")
-                    warm_count = warm_count + 1;
+                    warm_count = warm_count + 1
                 fi
             od
 
@@ -338,17 +338,17 @@ namespace Analyser is
                 let default_project = hosts.default_project
 
                 if default_project? then
-                    return "no sessions warm yet - default project: {default_project}";
+                    return "no sessions warm yet - default project: {default_project}"
                 fi
 
-                return "no sessions warm yet - no default project configured";
+                return "no sessions warm yet - no default project configured"
             fi
 
             if let default_project: string = hosts.default_project then
-                result.append("(default project: {default_project})\n");
+                result.append("(default project: {default_project})\n")
             fi
 
-            return result.to_string();
+            return result.to_string()
         si
 
         run_release_session(hosts: PROJECT_HOSTS, arguments: JsonElement) -> string static is
@@ -362,14 +362,14 @@ namespace Analyser is
                 fi
 
             if target.length == 0 then
-                return "no project specified and no default project configured";
+                return "no project specified and no default project configured"
             fi
 
             if HOST_CLIENT.release(hosts.resolve(project)) then
-                return "released session for {target}";
+                return "released session for {target}"
             fi
 
-            return "no warm session for {target}";
+            return "no warm session for {target}"
         si
 
         run_heap_check(hosts: PROJECT_HOSTS, arguments: JsonElement) -> string static is
@@ -378,14 +378,14 @@ namespace Analyser is
             let info = HOST_CLIENT.heap_check_state(project, hosts.idle_timeout_seconds)
 
             if !info.running then
-                return "no analyser running for {project} - nothing to check";
+                return "no analyser running for {project} - nothing to check"
             fi
 
             if !info.healthy then
-                return "analyser for {project} was recycled - a fresh process will spawn on next request";
+                return "analyser for {project} was recycled - a fresh process will spawn on next request"
             fi
 
-            return "heap check ok for {project}";
+            return "heap check ok for {project}"
         si
 
         // A flat dump of every diagnostic is unusable on a large project -
@@ -413,22 +413,22 @@ namespace Analyser is
 
             for diagnostic in response.diagnostics do
                 if !diagnostic.is_internal /\ _passes_filters(diagnostic, file_filter, code_filter, min_severity, excluded) then
-                    matched.add(diagnostic);
+                    matched.add(diagnostic)
                 fi
             od
 
             if matched.count == 0 then
-                return _no_match_message(file_filter, code_filter, severity_filter, excluded);
+                return _no_match_message(file_filter, code_filter, severity_filter, excluded)
             fi
 
             let filters_present =
                 _has_filter(file_filter) \/ _has_filter(code_filter) \/ _has_filter(severity_filter) \/ excluded.count > 0
 
             if !filters_present /\ matched.count > SUMMARY_THRESHOLD then
-                return _render_summary(matched);
+                return _render_summary(matched)
             fi
 
-            return _render_detail(matched);
+            return _render_detail(matched)
         si
 
         _passes_filters(
@@ -439,12 +439,12 @@ namespace Analyser is
             excluded: Collections.SET[string]
         ) -> bool static is
             if diagnostic.severity > min_severity then
-                return false;
+                return false
             fi
 
             if let filter: string = file_filter then
                 if filter.length > 0 /\ !(diagnostic.path =~ filter \/ diagnostic.path.starts_with(filter)) then
-                    return false;
+                    return false
                 fi
             fi
 
@@ -452,15 +452,15 @@ namespace Analyser is
 
             if let wanted: string = code_filter then
                 if wanted.length > 0 /\ code !~ wanted.to_lower_invariant() then
-                    return false;
+                    return false
                 fi
             fi
 
             if excluded.contains(code) then
-                return false;
+                return false
             fi
 
-            return true;
+            return true
         si
 
         _render_summary(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
@@ -472,7 +472,7 @@ namespace Analyser is
             result.append("by code:\n")
 
             for entry in _counted_desc(matched, d => _code_key(d)) do
-                result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
+                result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n")
             od
 
             result.append("\ntop files:\n")
@@ -483,12 +483,12 @@ namespace Analyser is
             for entry in files do
                 if shown < TOP_FILES then
                     result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n")
-                    shown = shown + 1;
+                    shown = shown + 1
                 fi
             od
 
             if files.count > TOP_FILES then
-                result.append("  ... and {files.count - TOP_FILES} more files\n");
+                result.append("  ... and {files.count - TOP_FILES} more files\n")
             fi
 
             let errors = _errors_of(matched)
@@ -497,14 +497,14 @@ namespace Analyser is
                 result.append("\nerrors:\n")
 
                 for diagnostic in errors do
-                    result.append("  {render_diagnostic(diagnostic)}\n");
+                    result.append("  {render_diagnostic(diagnostic)}\n")
                 od
             fi
 
             result.append("\nSummary only - filter with file=, severity=, code=, or exclude_codes=[...] to see individual warnings.\n")
             result.append(_inlay_pointer(matched))
 
-            return result.to_string();
+            return result.to_string()
         si
 
         _render_detail(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
@@ -519,19 +519,19 @@ namespace Analyser is
 
             for diagnostic in sorted do
                 if shown < DETAIL_LIMIT then
-                    result.append("{render_diagnostic(diagnostic)}\n");
+                    result.append("{render_diagnostic(diagnostic)}\n")
                 fi
 
-                shown = shown + 1;
+                shown = shown + 1
             od
 
             if shown > DETAIL_LIMIT then
-                result.append("... and {shown - DETAIL_LIMIT} more - narrow with file=, severity=, code=, or exclude_codes=[...]\n");
+                result.append("... and {shown - DETAIL_LIMIT} more - narrow with file=, severity=, code=, or exclude_codes=[...]\n")
             fi
 
             result.append(_inlay_pointer(matched))
 
-            return result.to_string();
+            return result.to_string()
         si
 
         // A one-line pointer to the inlays tool, emitted only when the result
@@ -543,11 +543,11 @@ namespace Analyser is
                 let code = _code_key(diagnostic).to_lower_invariant()
 
                 if code =~ "redundant-unwrap" \/ code =~ "null-deref" then
-                    return "For the narrowing / flow behind these, call inlays(file=...).\n";
+                    return "For the narrowing / flow behind these, call inlays(file=...).\n"
                 fi
             od
 
-            return "";
+            return ""
         si
 
         // One line: "N errors, M warnings across K files", omitting the
@@ -564,13 +564,13 @@ namespace Analyser is
                 files.add(diagnostic.path)
 
                 if diagnostic.severity <= 1 then
-                    errors = errors + 1;
+                    errors = errors + 1
                 elif diagnostic.severity == 2 then
-                    warnings = warnings + 1;
+                    warnings = warnings + 1
                 elif diagnostic.severity == 3 then
-                    infos = infos + 1;
+                    infos = infos + 1
                 else
-                    hints = hints + 1;
+                    hints = hints + 1
                 fi
             od
 
@@ -580,14 +580,14 @@ namespace Analyser is
             parts.add(_plural(warnings, "warning"))
 
             if infos > 0 then
-                parts.add(_plural(infos, "info"));
+                parts.add(_plural(infos, "info"))
             fi
 
             if hints > 0 then
-                parts.add(_plural(hints, "hint"));
+                parts.add(_plural(hints, "hint"))
             fi
 
-            return "{_join(parts, ", ")} across {_plural(files.count, "file")}";
+            return "{_join(parts, ", ")} across {_plural(files.count, "file")}"
         si
 
         _errors_of(matched: Collections.Iterable[DIAGNOSTIC]) -> Collections.LIST[DIAGNOSTIC] static is
@@ -595,11 +595,11 @@ namespace Analyser is
 
             for diagnostic in matched do
                 if diagnostic.severity <= 1 then
-                    errors.add(diagnostic);
+                    errors.add(diagnostic)
                 fi
             od
 
-            return errors;
+            return errors
         si
 
         // Count items by a key, returned high-to-low so the biggest
@@ -611,45 +611,45 @@ namespace Analyser is
                 let key = key_of(diagnostic)
 
                 if counts.contains_key(key) then
-                    counts[key] = counts[key] + 1;
+                    counts[key] = counts[key] + 1
                 else
-                    counts[key] = 1;
+                    counts[key] = 1
                 fi
             od
 
             let pairs = Collections.LIST[COUNTED]()
 
             for entry in counts do
-                pairs.add(COUNTED(entry.key, entry.value));
+                pairs.add(COUNTED(entry.key, entry.value))
             od
 
-            return Collections.LIST[COUNTED](pairs | .sort((a, b) => b.count - a.count));
+            return Collections.LIST[COUNTED](pairs | .sort((a, b) => b.count - a.count))
         si
 
         _no_match_message(file_filter: string?, code_filter: string?, severity_filter: string?, excluded: Collections.SET[string]) -> string static is
             let constraints = Collections.LIST[string]()
 
             if _has_filter(file_filter) then
-                constraints.add("file={file_filter}");
+                constraints.add("file={file_filter}")
             fi
 
             if _has_filter(severity_filter) then
-                constraints.add("severity={severity_filter}");
+                constraints.add("severity={severity_filter}")
             fi
 
             if _has_filter(code_filter) then
-                constraints.add("code={code_filter}");
+                constraints.add("code={code_filter}")
             fi
 
             if excluded.count > 0 then
-                constraints.add("exclude_codes");
+                constraints.add("exclude_codes")
             fi
 
             if constraints.count == 0 then
-                return "no errors or warnings";
+                return "no errors or warnings"
             fi
 
-            return "no diagnostics match {_join(constraints, ", ")}";
+            return "no diagnostics match {_join(constraints, ", ")}"
         si
 
         render_diagnostic(diagnostic: DIAGNOSTIC) -> string static is
@@ -679,40 +679,40 @@ namespace Analyser is
                         l.start_line == diagnostic.start_line /\
                         l.start_column == diagnostic.start_column
                     then
-                        s = "{s} [{r.message}]";
+                        s = "{s} [{r.message}]"
                     else
-                        s = "{s} [{r.message}: {l.file}:{l.start_line}:{l.start_column}]";
+                        s = "{s} [{r.message}: {l.file}:{l.start_line}:{l.start_column}]"
                     fi
                 od
             fi
 
-            return s;
+            return s
         si
 
         _code_key(diagnostic: DIAGNOSTIC) -> string static is
             let code = diagnostic.code
 
             if code? /\ code.length > 0 then
-                return code;
+                return code
             fi
 
-            return "(uncoded)";
+            return "(uncoded)"
         si
 
         _compare_diagnostics(a: DIAGNOSTIC, b: DIAGNOSTIC) -> int static pure is
             if a.severity != b.severity then
-                return a.severity - b.severity;
+                return a.severity - b.severity
             fi
 
             if a.path !~ b.path then
-                return a.path.compare_to(b.path);
+                return a.path.compare_to(b.path)
             fi
 
             if a.start_line != b.start_line then
-                return a.start_line - b.start_line;
+                return a.start_line - b.start_line
             fi
 
-            return a.start_column - b.start_column;
+            return a.start_column - b.start_column
         si
 
         _has_filter(text: string?) -> bool static => text? /\ text.length > 0
@@ -722,11 +722,11 @@ namespace Analyser is
 
             for value in values do
                 if value.length > 0 then
-                    set.add(value.to_lower_invariant());
+                    set.add(value.to_lower_invariant())
                 fi
             od
 
-            return set;
+            return set
         si
 
         // Minimum-severity floor as a diagnostic severity int (lower is more
@@ -735,22 +735,22 @@ namespace Analyser is
         // means no floor.
         _severity_floor(name: string?) -> int static is
             if !name? \/ name.length == 0 then
-                return 99;
+                return 99
             fi
 
             let normalized = name.to_lower_invariant()
 
             if normalized =~ "error" then
-                return 1;
+                return 1
             elif normalized =~ "warning" \/ normalized =~ "warn" then
-                return 2;
+                return 2
             elif normalized =~ "info" then
-                return 3;
+                return 3
             elif normalized =~ "hint" then
-                return 4;
+                return 4
             fi
 
-            return 99;
+            return 99
         si
 
         _plural(count: int, word: string) -> string static =>
@@ -766,14 +766,14 @@ namespace Analyser is
 
             for part in parts do
                 if !first then
-                    result.append(separator);
+                    result.append(separator)
                 fi
 
                 result.append(part)
-                first = false;
+                first = false
             od
 
-            return result.to_string();
+            return result.to_string()
         si
 
         _pad_left(text: string, width: int) -> string static is
@@ -782,12 +782,12 @@ namespace Analyser is
 
             while padding > 0 do
                 result.append(' ')
-                padding = padding - 1;
+                padding = padding - 1
             od
 
             result.append(text)
 
-            return result.to_string();
+            return result.to_string()
         si
 
         severity_name(severity: int) -> string static =>
@@ -805,7 +805,7 @@ namespace Analyser is
             let file = WIRE.try_get_string(arguments, "file")
 
             if !file? \/ file.length == 0 then
-                throw System.Exception("file argument is required");
+                throw System.Exception("file argument is required")
             fi
 
             let code_filter = WIRE.try_get_string(arguments, "code")
@@ -822,16 +822,16 @@ namespace Analyser is
 
             for hint in response.hints do
                 if wanted.length == 0 \/ hint.code.to_lower_invariant() =~ wanted then
-                    matched.add(hint);
+                    matched.add(hint)
                 fi
             od
 
             if matched.count == 0 then
                 if _has_filter(code_filter) then
-                    return "no inlays in {file} match code={code_filter}";
+                    return "no inlays in {file} match code={code_filter}"
                 fi
 
-                return "no narrowing inlays in {file}";
+                return "no narrowing inlays in {file}"
             fi
 
             let result = StringBuilder()
@@ -840,7 +840,7 @@ namespace Analyser is
             result.append("by code:\n")
 
             for entry in _counted_desc(matched, h => h.code) do
-                result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n");
+                result.append("  {_pad_left("{entry.count}", 5)}  {entry.key}\n")
             od
 
             result.append("\n")
@@ -849,17 +849,17 @@ namespace Analyser is
 
             for hint in matched do
                 if shown < DETAIL_LIMIT then
-                    result.append("{render_inlay(file, hint)}\n");
+                    result.append("{render_inlay(file, hint)}\n")
                 fi
 
-                shown = shown + 1;
+                shown = shown + 1
             od
 
             if shown > DETAIL_LIMIT then
-                result.append("... and {shown - DETAIL_LIMIT} more - filter with code=\n");
+                result.append("... and {shown - DETAIL_LIMIT} more - filter with code=\n")
             fi
 
-            return result.to_string();
+            return result.to_string()
         si
 
         // Inlays render as their detail (the tooltip sentence the editor shows
@@ -880,33 +880,33 @@ namespace Analyser is
                     ""
                 fi
 
-            return "{file}:{hint.line}:{hint.column}: {text}{suffix}";
+            return "{file}:{hint.line}:{hint.column}: {text}{suffix}"
         si
 
         run_hover(session: ANALYSER_SESSION, arguments: JsonElement) -> string static is
             let position = read_position(arguments)
 
-            return hover_at(session, position);
+            return hover_at(session, position)
         si
 
         hover_at(session: ANALYSER_SESSION, position: POSITION) -> string static is
             let response = session.hover(position.file, position.line, position.column)
 
             if response.signature.length == 0 then
-                return "nothing at {position.file}:{position.line}:{position.column}";
+                return "nothing at {position.file}:{position.line}:{position.column}"
             fi
 
             if let kind_label: string = response.kind_label then
-                return "{response.signature}\n({kind_label})";
+                return "{response.signature}\n({kind_label})"
             fi
 
-            return response.signature;
+            return response.signature
         si
 
         run_position_locations(session: ANALYSER_SESSION, arguments: JsonElement, which: string) -> string static is
             let position = read_position(arguments)
 
-            return locations_at(session, position, which);
+            return locations_at(session, position, which)
         si
 
         locations_at(session: ANALYSER_SESSION, position: POSITION, which: string) -> string static is
@@ -920,16 +920,16 @@ namespace Analyser is
                 fi
 
             if locations.count == 0 then
-                return "no {which} found for {position.file}:{position.line}:{position.column}";
+                return "no {which} found for {position.file}:{position.line}:{position.column}"
             fi
 
             let result = StringBuilder()
 
             for location in locations do
-                result.append("{render_location(location)}\n");
+                result.append("{render_location(location)}\n")
             od
 
-            return result.to_string();
+            return result.to_string()
         si
 
         render_location(location: LOCATION_DTO) -> string static =>
@@ -949,23 +949,23 @@ namespace Analyser is
                     if query.length == 0 \/ symbol.search_description.to_lower_invariant().contains(query) then
                         if count < MAX_SYMBOL_MATCHES then
                             result.append(render_symbol_line(file.path, symbol))
-                            result.append("\n");
+                            result.append("\n")
                         fi
 
-                        count = count + 1;
+                        count = count + 1
                     fi
                 od
             od
 
             if count == 0 then
-                return "no symbols match {query}";
+                return "no symbols match {query}"
             fi
 
             if count > MAX_SYMBOL_MATCHES then
-                result.append("... and {count - MAX_SYMBOL_MATCHES} more matches not shown - narrow the query\n");
+                result.append("... and {count - MAX_SYMBOL_MATCHES} more matches not shown - narrow the query\n")
             fi
 
-            return result.to_string();
+            return result.to_string()
         si
 
         render_symbol_line(file_path: string, symbol: SYMBOL_DTO) -> string static is
@@ -974,10 +974,10 @@ namespace Analyser is
             result.append("{symbol.search_description} - {file_path}:{symbol.start_line}:{symbol.start_column}")
 
             if symbol.qualifier.length > 0 then
-                result.append(" (in {symbol.qualifier})");
+                result.append(" (in {symbol.qualifier})")
             fi
 
-            return result.to_string();
+            return result.to_string()
         si
 
         // Name-based dispatch: resolve `name` to the symbol(s) whose leading
@@ -988,7 +988,7 @@ namespace Analyser is
             let name = WIRE.try_get_string(arguments, "name")
 
             if !name? \/ name.length == 0 then
-                throw System.Exception("name argument is required");
+                throw System.Exception("name argument is required")
             fi
 
             let matches = resolve_name(session, name)
@@ -998,11 +998,11 @@ namespace Analyser is
                     let imported = try_resolve_imported_type(session, name)
 
                     if imported.length > 0 then
-                        return imported;
+                        return imported
                     fi
                 fi
 
-                return "no symbol named {name} (try `symbols` for a substring search, or `members` with a fully-qualified name for imported types)";
+                return "no symbol named {name} (try `symbols` for a substring search, or `members` with a fully-qualified name for imported types)"
             fi
 
             if matches.count > 1 then
@@ -1010,21 +1010,21 @@ namespace Analyser is
                     let collapsed = try_collapse_implementations(session, name, matches)
 
                     if collapsed.length > 0 then
-                        return collapsed;
+                        return collapsed
                     fi
                 fi
 
-                return render_candidates(name, matches);
+                return render_candidates(name, matches)
             fi
 
             let match = matches[0]
             let position = locate_identifier(session, match, name)
 
             if which =~ "hover" then
-                return hover_at(session, position);
+                return hover_at(session, position)
             fi
 
-            return locations_at(session, position, which);
+            return locations_at(session, position, which)
         si
 
         // implementations_of routinely lands on a shared method name where
@@ -1050,22 +1050,22 @@ namespace Analyser is
 
                     if !seen.contains(key) then
                         seen.add(key)
-                        ordered.add(location);
+                        ordered.add(location)
                     fi
                 od
             od
 
             if ordered.count == 0 then
-                return "";
+                return ""
             fi
 
             let result = StringBuilder()
 
             for location in ordered do
-                result.append("{render_location(location)}\n");
+                result.append("{render_location(location)}\n")
             od
 
-            return result.to_string();
+            return result.to_string()
         si
 
         // Fallback for `hover_of("StringBuilder")` and friends: session
@@ -1082,12 +1082,12 @@ namespace Analyser is
                 let response = session.describe_type(qualified)
 
                 if response.resolved_name.length > 0 then
-                    candidates.add(response);
+                    candidates.add(response)
                 fi
             od
 
             if candidates.count == 0 then
-                return "";
+                return ""
             fi
 
             if candidates.count > 1 then
@@ -1095,14 +1095,14 @@ namespace Analyser is
                 disambig.append("{candidates.count} imported types share the short name {name}. Try one:\n")
 
                 for candidate in candidates do
-                    disambig.append("  {candidate.resolved_name} ({candidate.type_kind})\n");
+                    disambig.append("  {candidate.resolved_name} ({candidate.type_kind})\n")
                 od
 
-                return disambig.to_string();
+                return disambig.to_string()
             fi
 
             let only = candidates[0]
-            return "{only.type_kind} {only.resolved_name} (imported)";
+            return "{only.type_kind} {only.resolved_name} (imported)"
         si
 
         // Ambient namespaces that a project typically has in scope but
@@ -1139,12 +1139,12 @@ namespace Analyser is
                     let leading = extract_leading_identifier(symbol.search_description).to_lower_invariant()
 
                     if leading =~ target then
-                        matches.add(SYMBOL_MATCH(file.path, symbol));
+                        matches.add(SYMBOL_MATCH(file.path, symbol))
                     fi
                 od
             od
 
-            return matches;
+            return matches
         si
 
         // SYMBOL_DTO.start_line/start_column point at the declaration's
@@ -1157,33 +1157,33 @@ namespace Analyser is
         // access from the server).
         locate_identifier(session: ANALYSER_SESSION, match: SYMBOL_MATCH, name: string) -> POSITION static is
             if match.symbol.name_line > 0 /\ match.symbol.name_column > 0 then
-                return POSITION(match.file, match.symbol.name_line, match.symbol.name_column);
+                return POSITION(match.file, match.symbol.name_line, match.symbol.name_column)
             fi
 
             let default_position = POSITION(match.file, match.symbol.start_line, match.symbol.start_column)
             let full_path = Path.combine(session.project_directory, match.file)
 
             if !File.exists(full_path) then
-                return default_position;
+                return default_position
             fi
 
             try
                 let lines = File.read_all_lines(full_path)
 
                 if match.symbol.start_line < 1 \/ match.symbol.start_line > lines.count then
-                    return default_position;
+                    return default_position
                 fi
 
                 let line_text = lines[match.symbol.start_line - 1]
                 let index = line_text.to_lower_invariant().index_of(name.to_lower_invariant())
 
                 if index >= 0 then
-                    return POSITION(match.file, match.symbol.start_line, index + 1);
+                    return POSITION(match.file, match.symbol.start_line, index + 1)
                 fi
             catch ex: System.Exception
             yrt
 
-            return default_position;
+            return default_position
         si
 
         // Extract the leading identifier of a symbol's search description:
@@ -1195,13 +1195,13 @@ namespace Analyser is
 
             for c in description do
                 if !((c >= 'a' /\ c <= 'z') \/ (c >= 'A' /\ c <= 'Z') \/ (c >= '0' /\ c <= '9') \/ c == '_') then
-                    break;
+                    break
                 fi
 
-                end = end + 1;
+                end = end + 1
             od
 
-            return description.substring(0, end);
+            return description.substring(0, end)
         si
 
         render_candidates(name: string, matches: LIST[SYMBOL_MATCH]) -> string static is
@@ -1211,10 +1211,10 @@ namespace Analyser is
 
             for match in matches do
                 result.append(render_symbol_line(match.file, match.symbol))
-                result.append("\n");
+                result.append("\n")
             od
 
-            return result.to_string();
+            return result.to_string()
         si
 
         MAX_MEMBERS: int static => 200
@@ -1223,7 +1223,7 @@ namespace Analyser is
             let type_expression = WIRE.try_get_string(arguments, "type")
 
             if !type_expression? \/ type_expression.length == 0 then
-                throw System.Exception("type argument is required");
+                throw System.Exception("type argument is required")
             fi
 
             let response mut = session.describe_type(type_expression)
@@ -1235,15 +1235,15 @@ namespace Analyser is
                     let qualified = qualified_name_of(type_matches[0])
 
                     if qualified.length > 0 /\ qualified !~ type_expression then
-                        response = session.describe_type(qualified);
+                        response = session.describe_type(qualified)
                     fi
                 elif type_matches.count > 1 then
-                    return render_type_candidates(type_expression, type_matches);
+                    return render_type_candidates(type_expression, type_matches)
                 fi
             fi
 
             if response.resolved_name.length == 0 then
-                return "no type named {type_expression} - fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`";
+                return "no type named {type_expression} - fully-qualified names work best for imported types, e.g. `System.Text.StringBuilder`"
             fi
 
             let result = StringBuilder()
@@ -1254,13 +1254,13 @@ namespace Analyser is
                 result.append("ancestors:\n")
 
                 for ancestor in response.ancestors do
-                    result.append("  {ancestor}\n");
+                    result.append("  {ancestor}\n")
                 od
             fi
 
             if response.members.count == 0 then
                 result.append("no members\n")
-                return result.to_string();
+                return result.to_string()
             fi
 
             result.append("members:\n")
@@ -1269,17 +1269,17 @@ namespace Analyser is
 
             for member in response.members do
                 if count < MAX_MEMBERS then
-                    result.append("  {render_member(member)}\n");
+                    result.append("  {render_member(member)}\n")
                 fi
 
-                count = count + 1;
+                count = count + 1
             od
 
             if count > MAX_MEMBERS then
-                result.append("... and {count - MAX_MEMBERS} more members not shown\n");
+                result.append("... and {count - MAX_MEMBERS} more members not shown\n")
             fi
 
-            return result.to_string();
+            return result.to_string()
         si
 
         // The description already carries the natural classifier
@@ -1299,10 +1299,10 @@ namespace Analyser is
                 fi
 
             if member.is_inherited /\ member.inherited_from.length > 0 then
-                return "{head} [from {member.inherited_from}]";
+                return "{head} [from {member.inherited_from}]"
             fi
 
-            return head;
+            return head
         si
 
         // Whether a `members` type argument looks like a bare identifier
@@ -1312,16 +1312,16 @@ namespace Analyser is
         // and goes straight to describe_type.
         is_bare_identifier(text: string) -> bool static is
             if text.length == 0 then
-                return false;
+                return false
             fi
 
             for c in text do
                 if c == '.' \/ c == '[' \/ c == ']' \/ c == ',' \/ c == '(' \/ c == ')' \/ c == ' ' then
-                    return false;
+                    return false
                 fi
             od
 
-            return true;
+            return true
         si
 
         // Resolve a bare identifier to the type-like symbols (class, trait,
@@ -1334,11 +1334,11 @@ namespace Analyser is
 
             for match in all_matches do
                 if is_type_kind(match.symbol.kind) then
-                    type_matches.add(match);
+                    type_matches.add(match)
                 fi
             od
 
-            return type_matches;
+            return type_matches
         si
 
         // LSP-style SymbolKind values that describe_type can resolve:
@@ -1355,10 +1355,10 @@ namespace Analyser is
             let leading = extract_leading_identifier(match.symbol.search_description)
 
             if match.symbol.qualifier.length > 0 then
-                return "{match.symbol.qualifier}.{leading}";
+                return "{match.symbol.qualifier}.{leading}"
             fi
 
-            return leading;
+            return leading
         si
 
         // Ambiguous name: multiple types share the leading identifier
@@ -1370,27 +1370,27 @@ namespace Analyser is
             result.append("{matches.count} types share the name {name}. Re-invoke `members` with one of:\n")
 
             for match in matches do
-                result.append("  {qualified_name_of(match)} - {match.file}:{match.symbol.start_line}\n");
+                result.append("  {qualified_name_of(match)} - {match.file}:{match.symbol.start_line}\n")
             od
 
-            return result.to_string();
+            return result.to_string()
         si
 
         read_position(arguments: JsonElement) -> POSITION static is
             let file = WIRE.try_get_string(arguments, "file")
 
             if !file? then
-                throw System.Exception("file argument is required");
+                throw System.Exception("file argument is required")
             fi
 
             let line = WIRE.try_get_int(arguments, "line")
             let column = WIRE.try_get_int(arguments, "column")
 
             if line < 1 \/ column < 1 then
-                throw System.Exception("line and column arguments are required and 1-based");
+                throw System.Exception("line and column arguments are required and 1-based")
             fi
 
-            return POSITION(file, line, column);
+            return POSITION(file, line, column)
         si
     si
 
@@ -1402,7 +1402,7 @@ namespace Analyser is
         init(file: string, line: int, column: int) is
             self.file = file
             self.line = line
-            self.column = column;
+            self.column = column
         si
     si
 
@@ -1412,7 +1412,7 @@ namespace Analyser is
 
         init(file: string, symbol: SYMBOL_DTO) is
             self.file = file
-            self.symbol = symbol;
+            self.symbol = symbol
         si
     si
 
@@ -1424,7 +1424,7 @@ namespace Analyser is
 
         init(key: string, count: int) is
             self.key = key
-            self.count = count;
+            self.count = count
         si
     si
     // One row of ANALYSER_TOOLS.table: the wire metadata plus the
@@ -1445,7 +1445,7 @@ namespace Analyser is
             self.name = name
             self.description = description
             self.input_schema = input_schema
-            self.run = run;
+            self.run = run
         si
     si
 si

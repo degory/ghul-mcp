@@ -19,9 +19,9 @@ namespace MCP is
             self.name = name
             self.description = description
             input_schema = System.Text.Json.JsonSerializer.deserialize[JsonElement](schema_json, WIRE.options)
-            _handler = handler;
+            _handler = handler
         si
 
-        call(arguments: JsonElement) -> string => _handler(arguments);
+        call(arguments: JsonElement) -> string => _handler(arguments)
     si
 si
