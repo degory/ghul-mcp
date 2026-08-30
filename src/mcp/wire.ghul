@@ -15,16 +15,16 @@ namespace MCP is
 
             for c in name do
                 if c == '_' then
-                    upper_next = true;
+                    upper_next = true
                 elif upper_next then
                     result.append(char.to_upper(c))
-                    upper_next = false;
+                    upper_next = false
                 else
-                    result.append(c);
+                    result.append(c)
                 fi
             od
 
-            return result.to_string();
+            return result.to_string()
         si
     si
 
@@ -41,10 +41,10 @@ namespace MCP is
 
                 o.property_naming_policy = SNAKE_TO_CAMEL_POLICY()
 
-                _options = o;
+                _options = o
             fi
 
-            return _options;
+            return _options
         si
 
         _null_id: JsonElement static
@@ -58,10 +58,10 @@ namespace MCP is
         null_id: JsonElement static is
             if !_have_null_id then
                 _null_id = JsonSerializer.deserialize[JsonElement]("null", options)
-                _have_null_id = true;
+                _have_null_id = true
             fi
 
-            return _null_id;
+            return _null_id
         si
 
         // Read one message line, skipping blank lines. Returns null at end
@@ -72,40 +72,40 @@ namespace MCP is
                 let line = reader.read_line()
 
                 if !line? then
-                    return null;
+                    return null
                 fi
 
                 if string.is_null_or_white_space(line) then
-                    continue;
+                    continue
                 fi
 
-                return JsonSerializer.deserialize[REQUEST](line, options);
+                return JsonSerializer.deserialize[REQUEST](line, options)
             od
         si
 
         write(writer: IO.TextWriter, message: object) static is
             writer.write(JsonSerializer.serialize(message, message.get_type(), options))
             writer.write("\n")
-            writer.flush();
+            writer.flush()
         si
 
         // Fetch a string-valued property, or null if the element isn't an
         // object, lacks the property, or the property isn't a string.
         try_get_string(element: JsonElement, name: string) -> string? static is
             if element.value_kind != JsonValueKind.OBJECT then
-                return null;
+                return null
             fi
 
             try
                 let property = element.get_property(name)
 
                 if property.value_kind == JsonValueKind.STRING then
-                    return property.get_string();
+                    return property.get_string()
                 fi
             catch ex: Collections.KeyNotFoundException
             yrt
 
-            return null;
+            return null
         si
 
         // Fetch an integer-valued property; 0 if the element isn't an
@@ -116,32 +116,32 @@ namespace MCP is
                     let property = element.get_property(name)
 
                     if property.value_kind == JsonValueKind.NUMBER then
-                        return property.get_int32();
+                        return property.get_int32()
                     fi
                 catch ex: Collections.KeyNotFoundException
                 yrt
             fi
 
-            return 0;
+            return 0
         si
 
         // Fetch a boolean-valued property; false if the element isn't an
         // object, lacks the property, or the property isn't a boolean.
         try_get_bool(element: JsonElement, name: string) -> bool static is
             if element.value_kind != JsonValueKind.OBJECT then
-                return false;
+                return false
             fi
 
             try
                 let property = element.get_property(name)
 
                 if property.value_kind == JsonValueKind.TRUE then
-                    return true;
+                    return true
                 fi
             catch ex: Collections.KeyNotFoundException
             yrt
 
-            return false;
+            return false
         si
 
         // Fetch a string-array property; an empty list if the element
@@ -151,14 +151,14 @@ namespace MCP is
             let result = Collections.LIST[string]()
 
             if element.value_kind != JsonValueKind.OBJECT then
-                return result;
+                return result
             fi
 
             try
                 let property = element.get_property(name)
 
                 if property.value_kind != JsonValueKind.ARRAY then
-                    return result;
+                    return result
                 fi
 
                 for item in property.enumerate_array() do
@@ -166,26 +166,26 @@ namespace MCP is
                         let text = item.get_string()
 
                         if text? then
-                            result.add(text);
+                            result.add(text)
                         fi
                     fi
                 od
             catch ex: Collections.KeyNotFoundException
             yrt
 
-            return result;
+            return result
         si
 
         // Fetch an arbitrary property; an undefined JsonElement if absent.
         try_get_element(element: JsonElement, name: string) -> JsonElement static is
             if element.value_kind == JsonValueKind.OBJECT then
                 try
-                    return element.get_property(name);
+                    return element.get_property(name)
                 catch ex: Collections.KeyNotFoundException
                 yrt
             fi
 
-            return _undefined;
+            return _undefined
         si
     si
 
@@ -200,7 +200,7 @@ namespace MCP is
         @suppress("field-definite-assignment")
         init() is si
 
-        is_notification: bool => id.value_kind == JsonValueKind.UNDEFINED;
+        is_notification: bool => id.value_kind == JsonValueKind.UNDEFINED
     si
 
     class RESPONSE is
@@ -211,7 +211,7 @@ namespace MCP is
         init(id: JsonElement, result: object) is
             jsonrpc = "2.0"
             self.id = id
-            self.result = result;
+            self.result = result
         si
     si
 
@@ -223,7 +223,7 @@ namespace MCP is
         init(id: JsonElement, code: int, message: string) is
             jsonrpc = "2.0"
             self.id = id
-            error = ERROR_BODY(code, message);
+            error = ERROR_BODY(code, message)
         si
     si
 
@@ -233,7 +233,7 @@ namespace MCP is
 
         init(code: int, message: string) is
             self.code = code
-            self.message = message;
+            self.message = message
         si
     si
 si

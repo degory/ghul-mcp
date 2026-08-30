@@ -102,12 +102,12 @@ namespace Analyser is
             _requests = 0L
             _errors = 0L
             _calls = 0L
-            _edits = 0L;
+            _edits = 0L
         si
 
         run(socket_path: string) is
             if File.exists(socket_path) then
-                File.delete(socket_path);
+                File.delete(socket_path)
             fi
 
             let listener = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED)
@@ -138,14 +138,14 @@ namespace Analyser is
                                 "ghul-mcp: pool host exiting after {_idle_timeout_seconds}s idle"
                             )
 
-                            break;
+                            break
                         fi
 
                         if _shutdown then
-                            break;
+                            break
                         fi
 
-                        continue;
+                        continue
                     fi
 
                     idle_seconds = 0
@@ -153,26 +153,26 @@ namespace Analyser is
                     let client = listener.accept()
 
                     try
-                        handle_connection(client);
+                        handle_connection(client)
                     catch ex: Exception
-                        Std.error.write_line("ghul-mcp: pool host connection error: {ex.message}");
+                        Std.error.write_line("ghul-mcp: pool host connection error: {ex.message}")
                     finally
-                        client.close();
+                        client.close()
                     yrt
 
                     if _shutdown then
-                        break;
+                        break
                     fi
                 od
             finally
                 listener.close()
 
                 try
-                    File.delete(socket_path);
+                    File.delete(socket_path)
                 catch ex: Exception
                 yrt
 
-                release_session();
+                release_session()
             yrt
         si
 
@@ -191,14 +191,14 @@ namespace Analyser is
             let line = reader.read_line()
 
             if !line? then
-                return;
+                return
             fi
 
             let frame = parse_frame(line)
 
             if !frame? then
                 writer.write_line(error_json("could not parse the hello request"))
-                return;
+                return
             fi
 
             let op = WIRE.try_get_string(frame, "op")
@@ -213,17 +213,17 @@ namespace Analyser is
                         )
                     )
 
-                    return;
+                    return
                 fi
 
                 _connections = _connections + 1L
 
                 writer.write_line(
                     reply_json(HELLO_REPLY(true, PROTOCOL_VERSION, _server_version))
-                );
+                )
             else
                 writer.write_line(error_json("expected a hello request first"))
-                return;
+                return
             fi
 
             // A read that times out or errors after a reply is a client
@@ -233,20 +233,20 @@ namespace Analyser is
                 let request_line: string? mut = null
 
                 try
-                    request_line = reader.read_line();
+                    request_line = reader.read_line()
                 catch ex: Exception
-                    break;
+                    break
                 yrt
 
                 if !request_line? then
-                    break;
+                    break
                 fi
 
                 if string.is_null_or_white_space(request_line) then
-                    continue;
+                    continue
                 fi
 
-                writer.write_line(handle_request(request_line));
+                writer.write_line(handle_request(request_line))
             od
         si
 
@@ -261,7 +261,7 @@ namespace Analyser is
             let op: string? mut = null
 
             if frame? then
-                op = WIRE.try_get_string(frame, "op");
+                op = WIRE.try_get_string(frame, "op")
             fi
 
             let reply = dispatch_request(frame)
@@ -278,71 +278,71 @@ namespace Analyser is
                     _status_of(is_error),
                     stopwatch.elapsed_milliseconds,
                     reply
-                );
+                )
             fi
 
-            return reply;
+            return reply
         si
 
         _status_of(is_error: bool) -> string is
             if is_error then
-                return "error";
+                return "error"
             fi
 
-            return "ok";
+            return "ok"
         si
 
         dispatch_request(frame: JsonElement?) -> string is
             if !frame? then
-                return _error_counted("could not parse the request");
+                return _error_counted("could not parse the request")
             fi
 
             let op = WIRE.try_get_string(frame, "op")
 
             if !op? then
-                return _error_counted("no op in the request");
+                return _error_counted("no op in the request")
             fi
 
             if op =~ "call" then
-                return handle_call(frame);
+                return handle_call(frame)
             elif op =~ "edit" then
-                return handle_edit(frame);
+                return handle_edit(frame)
             elif op =~ "info" then
-                return handle_info();
+                return handle_info()
             elif op =~ "release" then
-                return handle_release();
+                return handle_release()
             elif op =~ "heap_check" then
-                return handle_heap_check();
+                return handle_heap_check()
             elif op =~ "shutdown" then
                 _shutdown = true
 
-                return reply_json(OK_REPLY());
+                return reply_json(OK_REPLY())
             fi
 
-            return _error_counted("unknown op: {op}");
+            return _error_counted("unknown op: {op}")
         si
 
         _error_counted(message: string) -> string is
             _errors = _errors + 1L
 
-            return error_json(message);
+            return error_json(message)
         si
 
         handle_call(frame: JsonElement) -> string is
             let tool = WIRE.try_get_string(frame, "tool")
 
             if !tool? \/ tool.length == 0 then
-                return error_json("call requires a tool name");
+                return error_json("call requires a tool name")
             fi
 
             if !_handlers.contains_key(tool) then
-                return error_json("unknown tool: {tool}");
+                return error_json("unknown tool: {tool}")
             fi
 
             let arguments = WIRE.try_get_element(frame, "arguments")
 
             if arguments.value_kind == JsonValueKind.UNDEFINED then
-                return error_json("call requires arguments (an empty object suffices)");
+                return error_json("call requires arguments (an empty object suffices)")
             fi
 
             try
@@ -350,9 +350,9 @@ namespace Analyser is
 
                 _calls = _calls + 1L
 
-                return reply_json(CALL_REPLY(result));
+                return reply_json(CALL_REPLY(result))
             catch ex: Exception
-                return error_json("{ex.get_type().name}: {ex.message}");
+                return error_json("{ex.get_type().name}: {ex.message}")
             yrt
         si
 
@@ -360,7 +360,7 @@ namespace Analyser is
             let file = WIRE.try_get_string(frame, "file")
 
             if !file? \/ file.length == 0 then
-                return error_json("edit requires a file path relative to the project");
+                return error_json("edit requires a file path relative to the project")
             fi
 
             // Rejects an absolute `file` (Path.combine ignores the base and
@@ -370,7 +370,7 @@ namespace Analyser is
             // other access control, unlike the MCP tools, which are only
             // reachable over the spawning process's own stdio.
             if !is_within_project(_project, file) then
-                return error_json("file escapes the project directory");
+                return error_json("file escapes the project directory")
             fi
 
             try
@@ -387,7 +387,7 @@ namespace Analyser is
                                 diagnostic.code ?? "",
                                 diagnostic.message.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
                             )
-                        );
+                        )
                     fi
                 od
 
@@ -396,9 +396,9 @@ namespace Analyser is
                 let reply = EDIT_REPLY(result)
                 reply.compiler_version = session().compiler_version
 
-                return reply_json(reply);
+                return reply_json(reply)
             catch ex: Exception
-                return error_json("{ex.get_type().name}: {ex.message}");
+                return error_json("{ex.get_type().name}: {ex.message}")
             yrt
         si
 
@@ -414,7 +414,7 @@ namespace Analyser is
                 pid = session.process_id
                 compiler = session.compiler_version
                 source_count = session.known_source_count
-                analyser_working_set = session.working_set;
+                analyser_working_set = session.working_set
             fi
 
             let now = System.DateTime.utc_now
@@ -432,18 +432,18 @@ namespace Analyser is
             reply.calls = _calls
             reply.edits = _edits
 
-            return reply_json(reply);
+            return reply_json(reply)
         si
 
         handle_release() -> string is
-            return reply_json(RELEASE_REPLY(release_session()));
+            return reply_json(RELEASE_REPLY(release_session()))
         si
 
         handle_heap_check() -> string is
             let current = session()
 
             if !current.is_running then
-                return reply_json(HEAP_REPLY(false, false));
+                return reply_json(HEAP_REPLY(false, false))
             fi
 
             let healthy = current.send_heap_check()
@@ -452,54 +452,54 @@ namespace Analyser is
                 // Watchdog wrote restart and exited; drop the session so a
                 // subsequent request spawns fresh rather than reusing the
                 // now-dead handle.
-                release_session();
+                release_session()
             fi
 
-            return reply_json(HEAP_REPLY(true, healthy));
+            return reply_json(HEAP_REPLY(true, healthy))
         si
 
         // The host's one analyser, spawned lazily on first use so an info
         // or version probe never pays for a process it does not need.
         session() -> ANALYSER_SESSION is
             if let session: ANALYSER_SESSION = _session then
-                return session;
+                return session
             fi
 
             let session = ANALYSER_SESSION(_project)
             _session = session
 
-            return session;
+            return session
         si
 
         release_session() -> bool is
             if !_session? then
-                return false;
+                return false
             fi
 
             try
-                _session.dispose();
+                _session.dispose()
             catch ex: Exception
             yrt
 
             _session = null
 
-            return true;
+            return true
         si
 
         parse_frame(line: string) -> JsonElement? static is
             try
-                return JsonSerializer.deserialize[JsonElement](line, WIRE.options);
+                return JsonSerializer.deserialize[JsonElement](line, WIRE.options)
             catch ex: Exception
-                return null;
+                return null
             yrt
         si
 
         error_json(message: string) -> string static is
-            return reply_json(ERROR_REPLY(message));
+            return reply_json(ERROR_REPLY(message))
         si
 
         reply_json(reply: object) -> string static is
-            return JsonSerializer.serialize(reply, reply.get_type(), WIRE.options);
+            return JsonSerializer.serialize(reply, reply.get_type(), WIRE.options)
         si
 
         // Rejects an absolute `path` and a `../` escape against the host's
@@ -515,7 +515,7 @@ namespace Analyser is
                     "{root}{Path.directory_separator_char}"
                 fi
 
-            return resolved.starts_with(root_with_separator);
+            return resolved.starts_with(root_with_separator)
         si
     si
 
@@ -527,7 +527,7 @@ namespace Analyser is
         init(ok: bool, protocol: int, server_version: string) is
             self.ok = ok
             self.protocol = protocol
-            self.server_version = server_version;
+            self.server_version = server_version
         si
     si
 
@@ -537,7 +537,7 @@ namespace Analyser is
 
         init(result: string) is
             ok = true
-            self.result = result;
+            self.result = result
         si
     si
 
@@ -545,7 +545,7 @@ namespace Analyser is
         ok: bool public
 
         init() is
-            ok = true;
+            ok = true
         si
     si
 
@@ -555,7 +555,7 @@ namespace Analyser is
 
         init(error: string) is
             ok = false
-            self.error = error;
+            self.error = error
         si
     si
 
@@ -571,7 +571,7 @@ namespace Analyser is
         init(diagnostics: LIST[EDIT_DIAGNOSTIC]) is
             ok = true
             self.diagnostics = diagnostics
-            self.compiler_version = null;
+            self.compiler_version = null
         si
     si
 
@@ -587,7 +587,7 @@ namespace Analyser is
             self.start_line = start_line
             self.start_column = start_column
             self.code = code
-            self.message = message;
+            self.message = message
         si
     si
 
@@ -618,7 +618,7 @@ namespace Analyser is
             self.warm = warm
             self.pid = pid
             self.compiler = compiler
-            self.source_count = source_count;
+            self.source_count = source_count
         si
     si
 
@@ -628,7 +628,7 @@ namespace Analyser is
 
         init(released: bool) is
             ok = true
-            self.released = released;
+            self.released = released
         si
     si
 
@@ -640,7 +640,7 @@ namespace Analyser is
         init(running: bool, healthy: bool) is
             ok = true
             self.running = running
-            self.healthy = healthy;
+            self.healthy = healthy
         si
     si
 si

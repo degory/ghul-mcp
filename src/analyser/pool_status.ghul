@@ -22,7 +22,7 @@ namespace Analyser is
 
                 if !info? then
                     builder.append("stale socket: {socket_path} (nothing is listening)\n")
-                    continue;
+                    continue
                 fi
 
                 hosts = hosts + 1
@@ -61,33 +61,33 @@ namespace Analyser is
 
                     builder.append(
                         "  analyser: {compiler_text}, {pid_text}, {info.source_count} sources{analyser_memory}\n"
-                    );
+                    )
                 else
-                    builder.append("  analyser: none warm\n");
+                    builder.append("  analyser: none warm\n")
                 fi
             od
 
             if hosts == 0 then
-                return "no pool hosts are running";
+                return "no pool hosts are running"
             fi
 
-            return builder.to_string();
+            return builder.to_string()
         si
 
         _duration(seconds: int) -> string static is
             if seconds >= 3600 then
-                return "{seconds / 3600}h {(seconds % 3600) / 60}m";
+                return "{seconds / 3600}h {(seconds % 3600) / 60}m"
             fi
 
             if seconds >= 60 then
-                return "{seconds / 60}m {seconds % 60}s";
+                return "{seconds / 60}m {seconds % 60}s"
             fi
 
-            return "{seconds}s";
+            return "{seconds}s"
         si
 
         _megabytes(bytes: long) -> string static is
-            return "{bytes / (1024L * 1024L)} MB";
+            return "{bytes / (1024L * 1024L)} MB"
         si
     si
 si

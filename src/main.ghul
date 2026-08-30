@@ -9,24 +9,24 @@ describe_version(hosts: Analyser.PROJECT_HOSTS) -> string is
     let info: Analyser.INFO_REPLY? mut = null
 
     if let default_project: string = hosts.default_project then
-        info = Analyser.HOST_CLIENT.info_if_running(default_project);
+        info = Analyser.HOST_CLIENT.info_if_running(default_project)
     fi
 
     if !info? then
-        return "ghul-mcp {server_version} (no analyser session warm for the default project)";
+        return "ghul-mcp {server_version} (no analyser session warm for the default project)"
     fi
 
     if !info.warm then
-        return "ghul-mcp {server_version} (no analyser session warm for the default project)";
+        return "ghul-mcp {server_version} (no analyser session warm for the default project)"
     fi
 
     let compiler = info.compiler
 
     if compiler? then
-        return "ghul-mcp {server_version} (ghul.compiler {compiler})";
+        return "ghul-mcp {server_version} (ghul.compiler {compiler})"
     fi
 
-    return "ghul-mcp {server_version} (compiler version unknown)";
+    return "ghul-mcp {server_version} (compiler version unknown)"
 si
 
 // Where the query log goes when no --query-log / --no-query-log argument
@@ -37,16 +37,16 @@ default_query_log_path() -> string? is
     let state_home = System.Environment.get_environment_variable("XDG_STATE_HOME")
 
     if state_home? /\ state_home.length > 0 then
-        return IO.Path.combine(state_home, "ghul-mcp", "query-log.jsonl");
+        return IO.Path.combine(state_home, "ghul-mcp", "query-log.jsonl")
     fi
 
     let home = System.Environment.get_environment_variable("HOME")
 
     if home? /\ home.length > 0 then
-        return IO.Path.combine(IO.Path.combine(home, ".local", "state"), "ghul-mcp", "query-log.jsonl");
+        return IO.Path.combine(IO.Path.combine(home, ".local", "state"), "ghul-mcp", "query-log.jsonl")
     fi
 
-    return null;
+    return null
 si
 
 entry(arguments: string[]) is
@@ -66,34 +66,34 @@ entry(arguments: string[]) is
 
         if (arg =~ "--project" \/ arg =~ "--default-project") /\ index + 1 < arguments.count then
             default_project = arguments[index + 1]
-            index = index + 2;
+            index = index + 2
         elif arg =~ "--query-log" /\ index + 1 < arguments.count then
             query_log_path = arguments[index + 1]
-            index = index + 2;
+            index = index + 2
         elif arg =~ "--no-query-log" then
             query_log_path = null
-            index = index + 1;
+            index = index + 1
         elif arg =~ "--pool-status" then
             pool_status = true
-            index = index + 1;
+            index = index + 1
         elif arg =~ "--pool-host" /\ index + 1 < arguments.count then
             pool_host_socket = arguments[index + 1]
-            index = index + 2;
+            index = index + 2
         elif arg =~ "--pool-host-idle-timeout" /\ index + 1 < arguments.count then
             let seconds_string = arguments[index + 1]
 
             try
-                pool_idle_timeout = int.parse(seconds_string);
+                pool_idle_timeout = int.parse(seconds_string)
             catch ex: System.Exception
                 Std.error.write_line(
                     "ghul-mcp: ignoring garbled --pool-host-idle-timeout value: {seconds_string}"
-                );
+                )
             yrt
 
-            index = index + 2;
+            index = index + 2
         else
             Std.error.write_line("ghul-mcp: ignoring unrecognised argument {arg}")
-            index = index + 1;
+            index = index + 1
         fi
     od
 
@@ -101,17 +101,17 @@ entry(arguments: string[]) is
         Std.out.write(Analyser.POOL_STATUS.render())
         Std.out.flush()
 
-        return;
+        return
     fi
 
     if let socket_path: string = pool_host_socket then
         if let project: string = default_project then
-            Analyser.POOL_HOST(project, pool_idle_timeout, server_version, query_log_path).run(socket_path);
+            Analyser.POOL_HOST(project, pool_idle_timeout, server_version, query_log_path).run(socket_path)
         else
-            Std.error.write_line("ghul-mcp: --pool-host requires --project");
+            Std.error.write_line("ghul-mcp: --pool-host requires --project")
         fi
 
-        return;
+        return
     fi
 
     let reader =
@@ -144,10 +144,10 @@ entry(arguments: string[]) is
     )
 
     for tool in Analyser.ANALYSER_TOOLS.tools((name, arguments) => hosts.route(name, arguments)) do
-        server.add_tool(tool);
+        server.add_tool(tool)
     od
 
     Analyser.ANALYSER_TOOLS.register_front_end(server, hosts)
 
-    server.run();
+    server.run()
 si
