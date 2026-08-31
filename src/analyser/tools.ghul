@@ -4,6 +4,7 @@ namespace Analyser is
 
     use Collections.LIST
     use Collections.MAP
+    use Ghul.Pipes
 
     use Analysis.Protocol.DIAGNOSTIC
     use Analysis.Protocol.INLAY_HINT
@@ -508,7 +509,7 @@ namespace Analyser is
         si
 
         _render_detail(matched: Collections.LIST[DIAGNOSTIC]) -> string static is
-            let sorted = Collections.LIST[DIAGNOSTIC](matched | .sort((a, b) => _compare_diagnostics(a, b)))
+            let sorted = Collections.LIST[DIAGNOSTIC](matched |> sort((a, b) => _compare_diagnostics(a, b)))
 
             let result = StringBuilder()
 
@@ -623,7 +624,7 @@ namespace Analyser is
                 pairs.add(COUNTED(entry.key, entry.value))
             od
 
-            return Collections.LIST[COUNTED](pairs | .sort((a, b) => b.count - a.count))
+            return Collections.LIST[COUNTED](pairs |> sort((a, b) => b.count - a.count))
         si
 
         _no_match_message(file_filter: string?, code_filter: string?, severity_filter: string?, excluded: Collections.SET[string]) -> string static is
