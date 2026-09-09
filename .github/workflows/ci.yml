@@ -117,6 +117,9 @@ jobs:
     if: ${{ github.event_name != 'pull_request' }}
     permissions:
       contents: read
+      # Lets the job ask GitHub for the token nuget.org trades for a
+      # publishing key. No NuGet secret is held here any more.
+      id-token: write
       packages: write
 
     steps:
@@ -133,10 +136,17 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+    # nuget.org trades a token GitHub signs for this repository and this
+    # workflow for a key that lasts an hour and is spent once. The key
+    # expires, so this sits immediately before the push.
+    - name: Ask nuget.org for a publishing key
+      id: nuget_login
+      uses: NuGet/login@v1
+      with:
+        user: ${{ secrets.NUGET_USER }}
+
     - name: Publish release package to NuGet
-      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${NUGET_TOKEN} -s https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
-      env:
-        NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
+      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${{ steps.nuget_login.outputs.NUGET_API_KEY }} -s https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
 
   create_release:
     needs: [version, publish_release_package]
