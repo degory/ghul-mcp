@@ -16,12 +16,14 @@ namespace Analyser is
         render() -> string static is
             let builder = StringBuilder()
             let hosts mut = 0
+            let swept = HOST_CLIENT.sweep_dead_sockets()
+            let silent mut = 0
 
             for socket_path in HOST_CLIENT.discover_sockets() do
                 let info = HOST_CLIENT.info_at(socket_path)
 
                 if !info? then
-                    builder.append("stale socket: {socket_path} (nothing is listening)\n")
+                    silent = silent + 1
                     continue
                 fi
 
@@ -67,8 +69,18 @@ namespace Analyser is
                 fi
             od
 
+            // Counted rather than listed: there can be hundreds, and every
+            // line is read by whoever asked.
+            if swept > 0 then
+                builder.append("removed {swept} dead socket(s) left by hosts that exited without removing them\n")
+            fi
+
+            if silent > 0 then
+                builder.append("{silent} socket(s) with no host answering, too new to remove yet\n")
+            fi
+
             if hosts == 0 then
-                return "no pool hosts are running"
+                return "no pool hosts are running\n{builder}".trim()
             fi
 
             return builder.to_string()

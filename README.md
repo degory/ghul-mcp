@@ -122,10 +122,16 @@ relaunch.
 sweeps every `/tmp/ghul-mcp-pool-*.sock`, asks each host for its status, and
 reports per project: the host pid, uptime and idle time, connection and
 request counters split by op, host and analyser memory, and the analyser's
-compiler, pid and source count. Sockets nothing answers are reported as
-stale. Discovery is the directory scan - the socket per project is the
-registry - so one call sees hosts used by other sessions, by the edit hook,
-and left behind by dead hosts alike.
+compiler, pid and source count. Discovery is the directory scan - the
+socket per project is the registry - so one call sees hosts used by other
+sessions and by the edit hook alike.
+
+A host removes its socket when it exits, including when it is stopped by a
+signal. One killed outright, or lost to a reboot, cannot, so `pool_status`
+and every starting host remove any socket nothing is listening on, and
+`pool_status` reports how many it removed rather than listing them. A socket
+under a minute old is left and only counted, since its host may have bound
+it and not yet be listening.
 
 The shared query log (`~/.local/state/ghul-mcp/query-log.jsonl`) records the
 host side too: every `edit` a hook feeds an analyser, and every failed op,
