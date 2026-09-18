@@ -15,6 +15,8 @@ namespace Analyser is
     use IO.Path
     use IO.Std
 
+    use Ghul.Disposable
+
     use Analysis.Protocol.EDIT_FILE
     use Analysis.Protocol.Request
     use Analysis.Protocol.Response
@@ -1038,7 +1040,7 @@ namespace Analyser is
         // INLAY_HINTS query the `inlays` tool depends on, ghul#1642; any
         // analyser predating compiler_version on the LISTEN frame, ghul#1634
         // / 19.13.0, is "too old to negotiate" and refused.)
-        MIN_COMPILER_VERSION: string static => "30.2.3"
+        MIN_COMPILER_VERSION: string static => "59.1.1"
 
         _reject_if_compiler_too_old(reported: string?) is
             if !reported? \/ reported.length == 0 then
@@ -1308,7 +1310,7 @@ namespace Analyser is
         inlay_hints(path: string) -> Response.INLAY_HINTS is
             compile_diagnostics(Collections.LIST([path]))
 
-            let response = query(Request.INLAY_HINTS(path))
+            let response = query(Request.INLAY_HINTS(path, null, null, null, null))
 
             if let inlays: Response.INLAY_HINTS = response then
                 return inlays
