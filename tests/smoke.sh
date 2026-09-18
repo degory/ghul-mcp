@@ -394,4 +394,29 @@ echo "$status_out" | grep -q "connections" || fail "pool_status CLI: expected co
 kill "$host_pid" 2>/dev/null || true
 wait "$host_pid" 2>/dev/null || true
 
+# a host stopped by a signal still removes its socket
+for _ in $(seq 20); do
+    [ -e "$host_socket" ] || break
+    sleep 0.25
+done
+[ -e "$host_socket" ] && fail "pool host: a host stopped by SIGTERM left its socket behind"
+
+# pool status removes a dead socket old enough to be sure of, counts a new
+# one rather than listing it, and leaves the new one alone: a host may have
+# bound it and not yet be listening
+old_socket="/tmp/ghul-mcp-pool-smoke-old-$$.sock"
+new_socket="/tmp/ghul-mcp-pool-smoke-new-$$.sock"
+timeout 1 nc -lU "$old_socket" || true
+timeout 1 nc -lU "$new_socket" || true
+[ -S "$old_socket" ] && [ -S "$new_socket" ] || fail "pool status: could not make dead sockets to sweep"
+touch -d '2 minutes ago' "$old_socket"
+
+status_out=$(dotnet "$server" --pool-status)
+rm -f "$new_socket"
+
+[ -e "$old_socket" ] && fail "pool status: expected a dead socket to be removed, got: $status_out"
+echo "$status_out" | grep -q "removed [0-9]* dead socket" || fail "pool status: expected the removal counted, got: $status_out"
+echo "$status_out" | grep -q "too new to remove" || fail "pool status: expected the new dead socket counted, got: $status_out"
+echo "$status_out" | grep -q "$new_socket" && fail "pool status: dead sockets should be counted, not listed, got: $status_out"
+
 echo "smoke test passed"

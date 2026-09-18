@@ -103,12 +103,17 @@ namespace Analyser is
             _errors = 0L
             _calls = 0L
             _edits = 0L
+            _signal_registrations = LIST[System.Runtime.InteropServices.PosixSignalRegistration]()
         si
 
         run(socket_path: string) is
+            HOST_CLIENT.sweep_dead_sockets()
+
             if File.exists(socket_path) then
                 File.delete(socket_path)
             fi
+
+            _unlink_on_signal(socket_path)
 
             let listener = Socket(AddressFamily.UNIX, SocketType.STREAM, ProtocolType.UNSPECIFIED)
 
@@ -167,12 +172,36 @@ namespace Analyser is
             finally
                 listener.close()
 
-                try
-                    File.delete(socket_path)
-                catch ex: Exception
-                yrt
+                _unlink(socket_path)
+
+                for registration in _signal_registrations do
+                    registration.dispose()
+                od
 
                 release_session()
+            yrt
+        si
+
+        // A host stopped by a signal leaves by a route that runs no
+        // finally block, so the socket is unlinked on the signal as well.
+        // Held in a field: a registration that is collected is withdrawn.
+        _signal_registrations: LIST[System.Runtime.InteropServices.PosixSignalRegistration]
+
+        _unlink_on_signal(socket_path: string) is
+            for signal in [
+                System.Runtime.InteropServices.PosixSignal.SIGINT,
+                System.Runtime.InteropServices.PosixSignal.SIGTERM,
+                System.Runtime.InteropServices.PosixSignal.SIGHUP
+            ] do
+                _signal_registrations.add(
+                    System.Runtime.InteropServices.PosixSignalRegistration.create(signal, context => _unlink(socket_path)))
+            od
+        si
+
+        _unlink(socket_path: string) static is
+            try
+                File.delete(socket_path)
+            catch ex: Exception
             yrt
         si
 
