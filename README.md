@@ -1,5 +1,10 @@
 # ghul-mcp
 
+[![CI](https://img.shields.io/github/actions/workflow/status/degory/ghul-mcp/ci.yml?branch=main)](https://github.com/degory/ghul-mcp/actions/workflows/ci.yml?query=branch%3Amain)
+[![NuGet version (ghul.mcp)](https://img.shields.io/nuget/v/ghul.mcp.svg)](https://www.nuget.org/packages/ghul.mcp/)
+[![License](https://img.shields.io/github/license/degory/ghul-mcp)](https://github.com/degory/ghul-mcp/blob/main/LICENSE)
+[![ghūl](https://img.shields.io/badge/gh%C5%ABl-100%25!-information)](https://ghul.dev)
+
 MCP (Model Context Protocol) server for the [ghūl programming
 language](https://ghul.dev). It drives the ghūl compiler's analysis mode to
 answer semantic queries — diagnostics, hover, definition, references, symbol
