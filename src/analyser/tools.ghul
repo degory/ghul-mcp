@@ -1123,7 +1123,6 @@ namespace Analyser is
             "System.Xml.Linq",
             "System.Text.Json",
             "Ghul",
-            "Ghul.Internal",
             "Collections",
             "IO",
             "Tasks"
