@@ -102,7 +102,7 @@ jobs:
         path: nupkg
 
     - name: Publish beta package to GitHub
-      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${GITHUB_TOKEN} -s https://nuget.pkg.github.com/degory/index.json --skip-duplicate --no-symbols
+      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${GITHUB_TOKEN} -s https://nuget.pkg.github.com/ghul-lang/index.json --skip-duplicate --no-symbols
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -132,7 +132,7 @@ jobs:
         path: nupkg
 
     - name: Publish release package to GitHub
-      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${GITHUB_TOKEN} -s https://nuget.pkg.github.com/degory/index.json --skip-duplicate --no-symbols
+      run: dotnet nuget push ./nupkg/ghul.mcp.${{ needs.version.outputs.package }}.nupkg -k ${GITHUB_TOKEN} -s https://nuget.pkg.github.com/ghul-lang/index.json --skip-duplicate --no-symbols
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
