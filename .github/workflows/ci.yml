@@ -41,7 +41,7 @@ jobs:
     # created here.
     - name: Determine the version
       id: version
-      uses: degory/create-version@v1.0.0
+      uses: ghul-lang/create-version@v1.0.0
       with:
         prerelease: ${{ github.event_name == 'pull_request' && format('beta.{0}', github.run_number) || '' }}
 
